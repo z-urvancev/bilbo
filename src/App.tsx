@@ -156,7 +156,7 @@ function Cell({
 }) {
   const marked = raw === true
   let cls =
-    'flex h-8 w-8 shrink-0 items-center justify-center rounded border text-sm transition focus:outline-none focus:ring-2 focus:ring-teal-400'
+    'flex h-7 w-7 shrink-0 items-center justify-center rounded border text-xs transition focus:outline-none focus:ring-2 focus:ring-teal-400 sm:h-8 sm:w-8 sm:text-sm'
   if (!habit.negative) {
     cls += marked
       ? ' border-emerald-600 bg-emerald-500 text-white shadow-sm'
@@ -197,7 +197,10 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null)
   const [authEmail, setAuthEmail] = useState('')
   const [authPassword, setAuthPassword] = useState('')
+  const [authPassword2, setAuthPassword2] = useState('')
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
   const [authErr, setAuthErr] = useState<string | null>(null)
+  const [authInfo, setAuthInfo] = useState<string | null>(null)
   const [syncErr, setSyncErr] = useState<string | null>(null)
   const [exportIncludeProgress, setExportIncludeProgress] = useState(true)
   const habitsRef = useRef(habits)
@@ -406,11 +409,11 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-svh bg-gradient-to-b from-teal-50 to-white">
-      <header className="border-b border-teal-200 bg-teal-700 px-4 py-4 text-white shadow-md">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">
+    <div className="min-h-svh bg-gradient-to-b from-teal-50 to-white pb-[env(safe-area-inset-bottom,0px)] pl-[max(0.75rem,env(safe-area-inset-left,0px))] pr-[max(0.75rem,env(safe-area-inset-right,0px))] pt-[env(safe-area-inset-top,0px)]">
+      <header className="border-b border-teal-200 bg-teal-700 px-3 py-3 text-white shadow-md sm:px-4 sm:py-4">
+        <div className="mx-auto flex max-w-7xl flex-col gap-3 sm:gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
+            <h1 className="min-w-0 truncate text-lg font-semibold tracking-tight sm:text-2xl">
               Календарь привычек
             </h1>
             <nav className="flex rounded-lg bg-teal-800/60 p-0.5 text-sm">
@@ -440,26 +443,29 @@ export default function App() {
             </nav>
           </div>
           {screen === 'tracker' && (
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex w-full min-w-0 flex-wrap items-center justify-between gap-2 sm:w-auto sm:justify-end">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center justify-center gap-1 sm:flex-initial sm:justify-end sm:gap-2">
             <button
               type="button"
               onClick={() => setMonthDelta(-1)}
-              className="rounded-lg bg-teal-800/80 p-2 hover:bg-teal-800"
+              className="shrink-0 rounded-lg bg-teal-800/80 p-1.5 hover:bg-teal-800 sm:p-2"
               aria-label="Предыдущий месяц"
             >
               <ChevronLeft className="h-5 w-5" />
             </button>
-            <span className="min-w-[10rem] text-center text-base font-medium capitalize">
+            <span className="min-w-0 flex-1 text-center text-sm font-medium capitalize sm:min-w-[10rem] sm:flex-none sm:text-base">
               {monthLabel(y, m0)}
             </span>
             <button
               type="button"
               onClick={() => setMonthDelta(1)}
-              className="rounded-lg bg-teal-800/80 p-2 hover:bg-teal-800"
+              className="shrink-0 rounded-lg bg-teal-800/80 p-1.5 hover:bg-teal-800 sm:p-2"
               aria-label="Следующий месяц"
             >
               <ChevronRight className="h-5 w-5" />
             </button>
+            </div>
+            <div className="flex w-full shrink-0 items-center justify-center gap-2 sm:w-auto">
             <input
               type="month"
               value={`${y}-${String(m0 + 1).padStart(2, '0')}`}
@@ -471,77 +477,57 @@ export default function App() {
                 setM0(ms - 1)
                 setSelectedD(1)
               }}
-              className="rounded-lg border border-teal-600 bg-teal-800/50 px-2 py-1.5 text-sm text-white outline-none focus:ring-2 focus:ring-teal-300"
+              className="max-w-full rounded-lg border border-teal-600 bg-teal-800/50 px-2 py-1.5 text-xs text-white outline-none focus:ring-2 focus:ring-teal-300 sm:text-sm"
             />
             <button
               type="button"
               onClick={() => setModal(true)}
-              className="inline-flex items-center gap-1 rounded-lg bg-white px-3 py-2 text-sm font-medium text-teal-800 shadow hover:bg-teal-50"
+              className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-white px-2.5 py-2 text-xs font-medium text-teal-800 shadow hover:bg-teal-50 sm:px-3 sm:text-sm"
             >
               <Plus className="h-4 w-4" />
               Привычка
             </button>
+            </div>
           </div>
           )}
         </div>
       </header>
 
       {screen === 'settings' ? (
-      <main className="mx-auto max-w-2xl px-3 py-8">
-        <h2 className="mb-6 text-lg font-semibold text-teal-900">
-          Источник данных
+      <main className="mx-auto max-w-lg px-3 py-6 sm:max-w-2xl sm:py-8">
+        <h2 className="mb-4 text-lg font-semibold text-teal-900">
+          Данные
         </h2>
-        <div className="space-y-4 rounded-xl border border-teal-200 bg-white p-6 shadow-sm">
-          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-teal-100 p-3 has-[:checked]:border-teal-500 has-[:checked]:bg-teal-50/50">
+        <div className="space-y-3 rounded-xl border border-teal-200 bg-white p-4 shadow-sm sm:p-5">
+          <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-teal-100 p-3 has-[:checked]:border-teal-500 has-[:checked]:bg-teal-50/50">
             <input
               type="radio"
               name="src"
-              className="mt-1"
               checked={dataSource === 'local'}
               onChange={() => {
                 setDataSource('local')
                 saveSettings({ dataSource: 'local' })
               }}
             />
-            <span>
-              <span className="font-medium text-teal-900">
-                Локально в браузере
-              </span>
-              <span className="mt-1 block text-sm text-teal-800/90">
-                Данные в{' '}
-                <code className="rounded bg-teal-100 px-1 text-xs">localStorage</code>{' '}
-                этого сайта (как сейчас). Остаются только на этом устройстве и в этом браузере.
-              </span>
-            </span>
+            <span className="font-medium text-teal-900">Только на устройстве</span>
           </label>
           <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-teal-100 p-3 has-[:checked]:border-teal-500 has-[:checked]:bg-teal-50/50">
             <input
               type="radio"
               name="src"
-              className="mt-1"
+              className="mt-0.5"
               checked={dataSource === 'folder'}
               onChange={() => {
                 setDataSource('folder')
                 saveSettings({ dataSource: 'folder' })
               }}
             />
-            <span className="w-full">
-              <span className="font-medium text-teal-900">
-                Файл в папке (JSON)
-              </span>
-              <span className="mt-1 block text-sm text-teal-800/90">
-                При изменениях копия сохраняется в файл{' '}
-                <code className="rounded bg-teal-100 px-1 text-xs">
-                  habit-calendar-data.json
-                </code>
-                в выбранной папке. Нужен Chrome или Edge (доступ к папке).{' '}
-                {folderConnected ? (
-                  <span className="font-medium text-emerald-700">Папка подключена.</span>
-                ) : (
-                  <span className="text-amber-800">Папка не выбрана.</span>
-                )}
-              </span>
-              <div className="mt-3 flex flex-wrap gap-2">
+            <span className="w-full min-w-0">
+              <span className="font-medium text-teal-900">Файл на диске</span>
+              <p className="mt-1 text-xs text-teal-700">
+                {folderConnected ? 'Папка выбрана' : 'Папка не выбрана'}
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
                 <button
                   type="button"
                   onClick={async () => {
@@ -576,7 +562,7 @@ export default function App() {
                   }}
                   className="rounded-lg border border-teal-300 px-3 py-2 text-sm text-teal-800 hover:bg-teal-50"
                 >
-                  Отключить папку
+                  Отключить
                 </button>
               </div>
             </span>
@@ -585,7 +571,7 @@ export default function App() {
             <input
               type="radio"
               name="src"
-              className="mt-1"
+              className="mt-0.5"
               checked={dataSource === 'supabase'}
               disabled={!supabaseConfigured}
               onChange={() => {
@@ -593,120 +579,176 @@ export default function App() {
                 saveSettings({ dataSource: 'supabase' })
               }}
             />
-            <span className="w-full">
-              <span className="font-medium text-teal-900">
-                Supabase (синхронизация между устройствами)
-              </span>
-              <span className="mt-1 block text-sm text-teal-800/90">
-                Таблицы{' '}
-                <code className="rounded bg-teal-100 px-1 text-xs">habits</code> и{' '}
-                <code className="rounded bg-teal-100 px-1 text-xs">habit_marks</code>.
-                Нужен вход по email. В корне проекта выполни SQL из{' '}
-                <code className="rounded bg-teal-100 px-1 text-xs">supabase/schema.sql</code>.
-              </span>
+            <span className="w-full min-w-0">
+              <span className="font-medium text-teal-900">Облако</span>
               {!supabaseConfigured && (
-                <p className="mt-2 text-sm text-amber-800">
-                  Задайте VITE_SUPABASE_URL и VITE_SUPABASE_ANON_KEY в файле .env
+                <p className="mt-1 text-xs text-amber-800">
+                  Не настроено
                 </p>
+              )}
+              {supabaseConfigured && session?.user && (
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-teal-50 px-3 py-2 text-sm text-teal-900">
+                  <span className="min-w-0 truncate font-medium">{session.user.email}</span>
+                  <button
+                    type="button"
+                    disabled={!supabase}
+                    onClick={async () => {
+                      setAuthErr(null)
+                      setAuthInfo(null)
+                      if (!supabase) return
+                      await supabase.auth.signOut()
+                    }}
+                    className="shrink-0 rounded-md border border-teal-300 px-2.5 py-1 text-xs text-teal-800 hover:bg-white disabled:opacity-50"
+                  >
+                    Выйти
+                  </button>
+                </div>
+              )}
+              {supabaseConfigured && !session?.user && (
+                <div className="mt-3 space-y-3">
+                  <div className="flex rounded-lg bg-teal-100/80 p-0.5 text-sm">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('login')
+                        setAuthErr(null)
+                        setAuthInfo(null)
+                      }}
+                      className={`flex-1 rounded-md px-3 py-2 font-medium transition ${
+                        authMode === 'login'
+                          ? 'bg-white text-teal-900 shadow'
+                          : 'text-teal-800'
+                      }`}
+                    >
+                      Вход
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('register')
+                        setAuthErr(null)
+                        setAuthInfo(null)
+                      }}
+                      className={`flex-1 rounded-md px-3 py-2 font-medium transition ${
+                        authMode === 'register'
+                          ? 'bg-white text-teal-900 shadow'
+                          : 'text-teal-800'
+                      }`}
+                    >
+                      Регистрация
+                    </button>
+                  </div>
+                  <input
+                    type="email"
+                    autoComplete="email"
+                    inputMode="email"
+                    placeholder="Эл. почта"
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    className="w-full rounded-lg border border-teal-200 px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-teal-400"
+                  />
+                  <input
+                    type="password"
+                    autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
+                    placeholder="Пароль"
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    className="w-full rounded-lg border border-teal-200 px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-teal-400"
+                  />
+                  {authMode === 'register' && (
+                    <input
+                      type="password"
+                      autoComplete="new-password"
+                      placeholder="Пароль ещё раз"
+                      value={authPassword2}
+                      onChange={(e) => setAuthPassword2(e.target.value)}
+                      className="w-full rounded-lg border border-teal-200 px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-teal-400"
+                    />
+                  )}
+                  <button
+                    type="button"
+                    disabled={!supabase}
+                    onClick={async () => {
+                      setAuthErr(null)
+                      setAuthInfo(null)
+                      if (!supabase) return
+                      const email = authEmail.trim()
+                      if (!email) {
+                        setAuthErr('Укажите почту')
+                        return
+                      }
+                      if (authMode === 'login') {
+                        const { error } = await supabase.auth.signInWithPassword({
+                          email,
+                          password: authPassword,
+                        })
+                        if (error) setAuthErr(error.message)
+                        else {
+                          setDataSource('supabase')
+                          saveSettings({ dataSource: 'supabase' })
+                        }
+                        return
+                      }
+                      if (authPassword.length < 6) {
+                        setAuthErr('Пароль не короче 6 символов')
+                        return
+                      }
+                      if (authPassword !== authPassword2) {
+                        setAuthErr('Пароли не совпадают')
+                        return
+                      }
+                      const { data, error } = await supabase.auth.signUp({
+                        email,
+                        password: authPassword,
+                        options: {
+                          emailRedirectTo: new URL(
+                            import.meta.env.BASE_URL,
+                            window.location.origin,
+                          ).href,
+                        },
+                      })
+                      if (error) setAuthErr(error.message)
+                      else {
+                        setDataSource('supabase')
+                        saveSettings({ dataSource: 'supabase' })
+                        if (data.user && !data.session) {
+                          setAuthInfo('Откройте письмо и подтвердите адрес.')
+                        } else {
+                          setAuthPassword('')
+                          setAuthPassword2('')
+                        }
+                      }
+                    }}
+                    className="w-full rounded-lg bg-teal-700 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-50"
+                  >
+                    {authMode === 'login' ? 'Войти' : 'Создать аккаунт'}
+                  </button>
+                </div>
               )}
               {syncErr && (
                 <p className="mt-2 text-sm text-rose-700">{syncErr}</p>
               )}
-              {session?.user && (
-                <p className="mt-2 text-sm text-teal-800">
-                  Вошли как <span className="font-medium">{session.user.email}</span>
-                </p>
-              )}
-              <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                <input
-                  type="email"
-                  autoComplete="email"
-                  placeholder="Email"
-                  value={authEmail}
-                  onChange={(e) => setAuthEmail(e.target.value)}
-                  className="rounded-lg border border-teal-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-teal-400"
-                />
-                <input
-                  type="password"
-                  autoComplete="current-password"
-                  placeholder="Пароль"
-                  value={authPassword}
-                  onChange={(e) => setAuthPassword(e.target.value)}
-                  className="rounded-lg border border-teal-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-teal-400"
-                />
-              </div>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  disabled={!supabase || !supabaseConfigured}
-                  onClick={async () => {
-                    setAuthErr(null)
-                    if (!supabase) return
-                    const { error } = await supabase.auth.signInWithPassword({
-                      email: authEmail.trim(),
-                      password: authPassword,
-                    })
-                    if (error) setAuthErr(error.message)
-                    else {
-                      setDataSource('supabase')
-                      saveSettings({ dataSource: 'supabase' })
-                    }
-                  }}
-                  className="rounded-lg bg-teal-700 px-3 py-2 text-sm font-medium text-white hover:bg-teal-800 disabled:opacity-50"
-                >
-                  Войти
-                </button>
-                <button
-                  type="button"
-                  disabled={!supabase || !supabaseConfigured}
-                  onClick={async () => {
-                    setAuthErr(null)
-                    if (!supabase) return
-                    const { error } = await supabase.auth.signUp({
-                      email: authEmail.trim(),
-                      password: authPassword,
-                    })
-                    if (error) setAuthErr(error.message)
-                    else {
-                      setDataSource('supabase')
-                      saveSettings({ dataSource: 'supabase' })
-                    }
-                  }}
-                  className="rounded-lg border border-teal-300 px-3 py-2 text-sm text-teal-800 hover:bg-teal-50 disabled:opacity-50"
-                >
-                  Регистрация
-                </button>
-                <button
-                  type="button"
-                  disabled={!supabase || !session}
-                  onClick={async () => {
-                    setAuthErr(null)
-                    if (!supabase) return
-                    await supabase.auth.signOut()
-                  }}
-                  className="rounded-lg border border-teal-300 px-3 py-2 text-sm text-teal-800 hover:bg-teal-50 disabled:opacity-50"
-                >
-                  Выйти
-                </button>
-              </div>
               {authErr && (
                 <p className="mt-2 text-sm text-rose-700">{authErr}</p>
+              )}
+              {authInfo && (
+                <p className="mt-2 text-sm text-emerald-800">{authInfo}</p>
               )}
             </span>
           </label>
         </div>
-        <h3 className="mb-3 mt-8 text-base font-semibold text-teal-900">
-          Резервная копия
+        <h3 className="mb-3 mt-6 text-base font-semibold text-teal-900">
+          Экспорт и импорт
         </h3>
         <div className="space-y-3 rounded-xl border border-teal-200 bg-white p-4 shadow-sm">
-          <label className="flex cursor-pointer items-center gap-2 text-sm text-teal-900">
+          <label className="flex cursor-pointer items-start gap-2 text-sm text-teal-900">
             <input
               type="checkbox"
-              className="h-4 w-4 rounded border-teal-400 text-teal-600"
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-teal-400 text-teal-600"
               checked={exportIncludeProgress}
               onChange={(e) => setExportIncludeProgress(e.target.checked)}
             />
-            С прогрессом (отметки по дням). Если снять — в файл попадут только привычки.
+            <span>Сохранять отметки по дням (иначе только список привычек)</span>
           </label>
           <div className="flex flex-wrap gap-2">
             <button
@@ -761,9 +803,9 @@ export default function App() {
         </button>
       </main>
       ) : (
-      <main className="mx-auto max-w-7xl px-3 py-6">
-        <div className="mb-6 grid gap-4 lg:grid-cols-[14rem_minmax(0,1fr)]">
-          <div>
+      <main className="mx-auto max-w-7xl px-2 py-4 sm:px-3 sm:py-6">
+        <div className="mb-4 grid gap-4 lg:mb-6 lg:grid-cols-[minmax(0,14rem)_minmax(0,1fr)]">
+          <div className="min-w-0">
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-teal-700">
               Месяц
             </p>
@@ -773,11 +815,11 @@ export default function App() {
               selectedD={selectedD}
               onPick={setSelectedD}
             />
-            <p className="mt-3 text-xs leading-relaxed text-teal-800">
-              Негативная привычка: отметка — срыв; пустая ячейка — успешный день.
+            <p className="mt-2 text-[11px] leading-snug text-teal-800 sm:mt-3 sm:text-xs">
+              Негативная: отметка — срыв, пусто — успех.
             </p>
           </div>
-          <section className="rounded-xl border border-teal-200 bg-white p-4 shadow-sm">
+          <section className="min-w-0 rounded-xl border border-teal-200 bg-white p-3 shadow-sm sm:p-4">
             <h2 className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-teal-900">
               <BarChart3 className="h-4 w-4 shrink-0" />
               <span>Динамика: {dynTitle}</span>
@@ -808,20 +850,20 @@ export default function App() {
                 </button>
               ))}
             </div>
-            <div className="flex items-stretch gap-2">
+            <div className="flex items-stretch gap-1.5 sm:gap-2">
               <div
                 aria-hidden
-                className="flex h-36 w-8 shrink-0 flex-col justify-between border-r border-teal-200 py-0.5 pr-1 text-right text-[10px] tabular-nums leading-none text-teal-600"
+                className="flex h-32 w-7 shrink-0 flex-col justify-between border-r border-teal-200 py-0.5 pr-0.5 text-right text-[9px] tabular-nums leading-none text-teal-600 sm:h-36 sm:w-8 sm:pr-1 sm:text-[10px]"
               >
                 {[100, 75, 50, 25, 0].map((tick) => (
                   <span key={tick}>{tick}</span>
                 ))}
               </div>
               <div
-                className={`min-w-0 flex-1 ${dynMode === 'day' ? 'overflow-x-auto pb-1' : ''}`}
+                className={`min-w-0 flex-1 touch-pan-x ${dynMode === 'day' ? 'overflow-x-auto pb-1' : ''}`}
               >
                 <div
-                  className={`relative h-36 ${dynMode === 'day' ? 'min-w-max' : ''}`}
+                  className={`relative h-32 sm:h-36 ${dynMode === 'day' ? 'min-w-max' : ''}`}
                 >
                   <div
                     className="pointer-events-none absolute inset-0 flex flex-col justify-between py-0"
@@ -882,20 +924,20 @@ export default function App() {
           </div>
         ) : (
           <div className="flex flex-col gap-0 overflow-hidden rounded-xl border border-teal-200 bg-white shadow-md lg:flex-row">
-            <div className="min-w-0 flex-1 overflow-x-auto">
-              <table className="w-max min-w-full border-collapse text-sm">
+            <div className="min-w-0 flex-1 overflow-x-auto [-webkit-overflow-scrolling:touch]">
+              <table className="w-max min-w-full border-collapse text-xs sm:text-sm">
                 <thead>
                   <tr className="bg-teal-700 text-white">
                     <th
                       rowSpan={2}
-                      className="sticky left-0 z-20 min-w-[10rem] border border-teal-600 bg-teal-700 px-2 py-2 align-middle text-left font-semibold"
+                      className="sticky left-0 z-20 max-w-[42vw] min-w-[7.5rem] border border-teal-600 bg-teal-700 px-1.5 py-2 align-middle text-left text-xs font-semibold sm:max-w-none sm:min-w-[10rem] sm:px-2 sm:text-sm"
                     >
                       Привычка
                     </th>
                     {Array.from({ length: dim }, (_, i) => i + 1).map((d) => (
                       <th
                         key={d}
-                        className={`min-w-[2.25rem] border border-teal-600 px-0 py-1.5 text-center text-xs font-medium ${
+                        className={`min-w-[2rem] border border-teal-600 px-0 py-1.5 text-center text-[10px] font-medium sm:min-w-[2.25rem] sm:text-xs ${
                           selectedD === d ? 'bg-teal-500' : ''
                         }`}
                       >
@@ -907,7 +949,7 @@ export default function App() {
                     {Array.from({ length: dim }, (_, i) => i + 1).map((d) => (
                       <th
                         key={`w-${d}`}
-                        className={`min-w-[2.25rem] border border-teal-600 px-0 pb-1.5 pt-0 text-center text-[10px] font-normal opacity-95 ${
+                        className={`min-w-[2rem] border border-teal-600 px-0 pb-1.5 pt-0 text-center text-[9px] font-normal opacity-95 sm:min-w-[2.25rem] sm:text-[10px] ${
                           selectedD === d ? 'bg-teal-500' : ''
                         }`}
                       >
@@ -920,7 +962,7 @@ export default function App() {
                   {orderedHabits.map((h) => (
                     <tr key={h.id}>
                       <td
-                        className={`sticky left-0 z-10 border border-slate-200 px-2 py-1 font-medium ${
+                        className={`sticky left-0 z-10 max-w-[42vw] min-w-[7.5rem] border border-slate-200 px-1.5 py-1 text-xs font-medium sm:max-w-none sm:min-w-[10rem] sm:px-2 sm:text-sm ${
                           h.negative ? 'text-rose-950' : 'text-teal-950'
                         } ${rowStyle(h)} border-r-teal-100/80 shadow-[4px_0_8px_-2px_rgba(15,118,110,0.12)]`}
                       >
@@ -977,8 +1019,8 @@ export default function App() {
             </div>
 
             <div className="w-full shrink-0 border-t border-teal-200 bg-teal-50/90 lg:w-[16.5rem] lg:border-l lg:border-t-0">
-              <div className="grid grid-cols-2 gap-px border-b border-teal-200 bg-teal-200 text-[10px] font-semibold uppercase tracking-wide text-teal-900 lg:grid-cols-1">
-                <div className="flex flex-wrap items-center gap-2 bg-teal-100 px-2 py-2">
+              <div className="border-b border-teal-200 bg-teal-200 text-[10px] font-semibold uppercase tracking-wide text-teal-900">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 bg-teal-100 px-2 py-2">
                   <span className="inline-flex items-center gap-0.5">
                     <Target className="h-3.5 w-3.5" /> Цель
                   </span>
@@ -1054,10 +1096,10 @@ export default function App() {
       )}
 
       {modal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-0 sm:items-center sm:p-4">
           <div
             role="dialog"
-            className="w-full max-w-lg rounded-2xl border border-teal-200 bg-white p-6 shadow-2xl"
+            className="max-h-[min(92dvh,100vh-env(safe-area-inset-bottom))] w-full max-w-lg overflow-y-auto rounded-t-2xl border border-teal-200 bg-white p-4 shadow-2xl sm:max-h-[85vh] sm:rounded-2xl sm:p-6"
           >
             <h3 className="mb-4 text-lg font-semibold text-teal-900">
               Новая привычка
