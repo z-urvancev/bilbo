@@ -12,9 +12,3 @@ export type Persisted = {
   habits: Habit[]
   completions: Completions
 }
-
-export type DataSource = 'local' | 'folder' | 'supabase'
-
-export type AppSettings = {
-  dataSource: DataSource
-}

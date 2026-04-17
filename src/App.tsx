@@ -11,7 +11,7 @@ import {
   Trash2,
   Trophy,
 } from 'lucide-react'
-import type { Completions, DataSource, Habit, Persisted } from './types'
+import type { Completions, Habit, Persisted } from './types'
 import {
   dateKey,
   daysInMonth,
@@ -33,16 +33,9 @@ import { buildSeed } from './seed'
 import { EMOJI_OPTIONS } from './emojis'
 import {
   downloadJsonFile,
-  idbClearDirHandle,
-  idbGetDirHandle,
-  idbSetDirHandle,
   mergeCompletionsForImportedHabits,
   parseBundleJson,
-  pickDirectory,
-  readBundleFromDirectory,
-  writeBundleToDirectory,
 } from './fileSync'
-import { loadSettings, saveSettings } from './settingsStorage'
 import { supabase, supabaseConfigured } from './lib/supabase'
 import { pullFromSupabase, pushToSupabase } from './supabase/sync'
 
@@ -67,17 +60,11 @@ function savePersisted(p: Persisted) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(p))
 }
 
-function MiniCalendar({
-  y,
-  m0,
-  selectedD,
-  onPick,
-}: {
-  y: number
-  m0: number
-  selectedD: number | null
-  onPick: (d: number) => void
-}) {
+function MiniCalendar() {
+  const today = new Date()
+  const y = today.getFullYear()
+  const m0 = today.getMonth()
+  const todayD = today.getDate()
   const dim = daysInMonth(y, m0)
   const first = new Date(y, m0, 1)
   const pad = weekdayMon0(first)
@@ -122,21 +109,18 @@ function MiniCalendar({
               {wn}
             </div>
             {row.map((d, ci) => (
-              <button
+              <div
                 key={ci}
-                type="button"
-                disabled={d === null}
-                onClick={() => d != null && onPick(d)}
-                className={`flex h-7 items-center justify-center rounded text-xs font-medium transition ${
+                className={`flex h-7 items-center justify-center rounded text-xs font-medium ${
                   d === null
-                    ? 'cursor-default bg-transparent'
-                    : selectedD === d
+                    ? 'bg-transparent'
+                    : d === todayD
                       ? 'bg-teal-600 text-white shadow'
-                      : 'bg-teal-50 text-teal-900 hover:bg-teal-100'
+                      : 'bg-teal-50 text-teal-900'
                 }`}
               >
                 {d ?? ''}
-              </button>
+              </div>
             ))}
           </div>
         )
@@ -180,10 +164,6 @@ export default function App() {
     () => loadPersisted().completions,
   )
   const [screen, setScreen] = useState<Screen>('tracker')
-  const [dataSource, setDataSource] = useState<DataSource>(
-    () => loadSettings().dataSource,
-  )
-  const [folderConnected, setFolderConnected] = useState(false)
   const [dynMode, setDynMode] = useState<DynMode>('week')
   const now = new Date()
   const [y, setY] = useState(now.getFullYear())
@@ -202,15 +182,14 @@ export default function App() {
   const [authErr, setAuthErr] = useState<string | null>(null)
   const [authInfo, setAuthInfo] = useState<string | null>(null)
   const [syncErr, setSyncErr] = useState<string | null>(null)
+  const [supabaseSyncPhase, setSupabaseSyncPhase] = useState<
+    'idle' | 'pulling' | 'ready'
+  >('idle')
   const [exportIncludeProgress, setExportIncludeProgress] = useState(true)
   const habitsRef = useRef(habits)
   const completionsRef = useRef(completions)
   habitsRef.current = habits
   completionsRef.current = completions
-
-  useEffect(() => {
-    void idbGetDirHandle().then((h) => setFolderConnected(!!h))
-  }, [])
 
   useEffect(() => {
     if (!supabase) return
@@ -228,34 +207,45 @@ export default function App() {
   }, [habits, completions])
 
   useEffect(() => {
-    if (!session?.user || dataSource !== 'supabase' || !supabaseConfigured) return
+    if (!session?.user || !supabaseConfigured) {
+      setSupabaseSyncPhase('idle')
+      return
+    }
     let cancelled = false
     setSyncErr(null)
+    setSupabaseSyncPhase('pulling')
     void (async () => {
       try {
         const r = await pullFromSupabase(session.user.id)
         if (cancelled) return
-        if (r && r.habits.length > 0) {
+        if (!r) {
+          setSupabaseSyncPhase('idle')
+          return
+        }
+        if (r.habits.length > 0) {
           setHabits(r.habits)
           setCompletions(r.completions)
         } else {
-          await pushToSupabase(
-            session.user.id,
-            habitsRef.current,
-            completionsRef.current,
-          )
+          const seed = buildSeed(new Date())
+          setHabits(seed.habits)
+          setCompletions(seed.completions)
         }
+        if (!cancelled) setSupabaseSyncPhase('ready')
       } catch (e) {
-        if (!cancelled) setSyncErr(e instanceof Error ? e.message : String(e))
+        if (!cancelled) {
+          setSyncErr(e instanceof Error ? e.message : String(e))
+          setSupabaseSyncPhase('idle')
+        }
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [session?.user?.id, dataSource])
+  }, [session?.user?.id])
 
   useEffect(() => {
-    if (!session?.user || dataSource !== 'supabase' || !supabaseConfigured) return
+    if (!session?.user || !supabaseConfigured) return
+    if (supabaseSyncPhase !== 'ready') return
     const uid = session.user.id
     const t = window.setTimeout(() => {
       void (async () => {
@@ -268,24 +258,7 @@ export default function App() {
       })()
     }, 650)
     return () => window.clearTimeout(t)
-  }, [habits, completions, session?.user?.id, dataSource])
-
-  useEffect(() => {
-    if (dataSource !== 'folder' || !folderConnected) return
-    const t = window.setTimeout(() => {
-      void (async () => {
-        const dir = await idbGetDirHandle()
-        if (dir) {
-          try {
-            await writeBundleToDirectory(dir, { habits, completions })
-          } catch {
-            void 0
-          }
-        }
-      })()
-    }, 450)
-    return () => window.clearTimeout(t)
-  }, [habits, completions, dataSource, folderConnected])
+  }, [habits, completions, session?.user?.id, supabaseSyncPhase])
 
   const dim = daysInMonth(y, m0)
   const today = new Date()
@@ -496,246 +469,156 @@ export default function App() {
       {screen === 'settings' ? (
       <main className="mx-auto max-w-lg px-3 py-6 sm:max-w-2xl sm:py-8">
         <h2 className="mb-4 text-lg font-semibold text-teal-900">
-          Данные
+          Аккаунт
         </h2>
         <div className="space-y-3 rounded-xl border border-teal-200 bg-white p-4 shadow-sm sm:p-5">
-          <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-teal-100 p-3 has-[:checked]:border-teal-500 has-[:checked]:bg-teal-50/50">
-            <input
-              type="radio"
-              name="src"
-              checked={dataSource === 'local'}
-              onChange={() => {
-                setDataSource('local')
-                saveSettings({ dataSource: 'local' })
-              }}
-            />
-            <span className="font-medium text-teal-900">Только на устройстве</span>
-          </label>
-          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-teal-100 p-3 has-[:checked]:border-teal-500 has-[:checked]:bg-teal-50/50">
-            <input
-              type="radio"
-              name="src"
-              className="mt-0.5"
-              checked={dataSource === 'folder'}
-              onChange={() => {
-                setDataSource('folder')
-                saveSettings({ dataSource: 'folder' })
-              }}
-            />
-            <span className="w-full min-w-0">
-              <span className="font-medium text-teal-900">Файл на диске</span>
-              <p className="mt-1 text-xs text-teal-700">
-                {folderConnected ? 'Папка выбрана' : 'Папка не выбрана'}
-              </p>
-              <div className="mt-2 flex flex-wrap gap-2">
+          {!supabaseConfigured && (
+            <p className="text-sm text-amber-800">
+              Вход недоступен: не заданы переменные Supabase для сборки.
+            </p>
+          )}
+          {supabaseConfigured && session?.user && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-teal-50 px-3 py-2 text-sm text-teal-900">
+              <span className="min-w-0 truncate font-medium">{session.user.email}</span>
+              <button
+                type="button"
+                disabled={!supabase}
+                onClick={async () => {
+                  setAuthErr(null)
+                  setAuthInfo(null)
+                  if (!supabase) return
+                  await supabase.auth.signOut()
+                }}
+                className="shrink-0 rounded-md border border-teal-300 px-2.5 py-1 text-xs text-teal-800 hover:bg-white disabled:opacity-50"
+              >
+                Выйти
+              </button>
+            </div>
+          )}
+          {supabaseConfigured && !session?.user && (
+            <div className="space-y-3">
+              <div className="flex rounded-lg bg-teal-100/80 p-0.5 text-sm">
                 <button
                   type="button"
-                  onClick={async () => {
-                    const dir = await pickDirectory()
-                    if (!dir) return
-                    await idbSetDirHandle(dir)
-                    setFolderConnected(true)
-                    setDataSource('folder')
-                    saveSettings({ dataSource: 'folder' })
-                    const fromFile = await readBundleFromDirectory(dir)
-                    if (fromFile) {
-                      setHabits(fromFile.habits)
-                      setCompletions(fromFile.completions)
-                    } else {
-                      await writeBundleToDirectory(dir, {
-                        habits,
-                        completions,
-                      })
-                    }
+                  onClick={() => {
+                    setAuthMode('login')
+                    setAuthErr(null)
+                    setAuthInfo(null)
                   }}
-                  className="rounded-lg bg-teal-700 px-3 py-2 text-sm font-medium text-white hover:bg-teal-800"
+                  className={`flex-1 rounded-md px-3 py-2 font-medium transition ${
+                    authMode === 'login'
+                      ? 'bg-white text-teal-900 shadow'
+                      : 'text-teal-800'
+                  }`}
                 >
-                  Выбрать папку
+                  Вход
                 </button>
                 <button
                   type="button"
-                  onClick={async () => {
-                    await idbClearDirHandle()
-                    setFolderConnected(false)
-                    setDataSource('local')
-                    saveSettings({ dataSource: 'local' })
+                  onClick={() => {
+                    setAuthMode('register')
+                    setAuthErr(null)
+                    setAuthInfo(null)
                   }}
-                  className="rounded-lg border border-teal-300 px-3 py-2 text-sm text-teal-800 hover:bg-teal-50"
+                  className={`flex-1 rounded-md px-3 py-2 font-medium transition ${
+                    authMode === 'register'
+                      ? 'bg-white text-teal-900 shadow'
+                      : 'text-teal-800'
+                  }`}
                 >
-                  Отключить
+                  Регистрация
                 </button>
               </div>
-            </span>
-          </label>
-          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-teal-100 p-3 has-[:checked]:border-teal-500 has-[:checked]:bg-teal-50/50">
-            <input
-              type="radio"
-              name="src"
-              className="mt-0.5"
-              checked={dataSource === 'supabase'}
-              disabled={!supabaseConfigured}
-              onChange={() => {
-                setDataSource('supabase')
-                saveSettings({ dataSource: 'supabase' })
-              }}
-            />
-            <span className="w-full min-w-0">
-              <span className="font-medium text-teal-900">Облако</span>
-              {!supabaseConfigured && (
-                <p className="mt-1 text-xs text-amber-800">
-                  Не настроено
-                </p>
+              <input
+                type="email"
+                autoComplete="email"
+                inputMode="email"
+                placeholder="Эл. почта"
+                value={authEmail}
+                onChange={(e) => setAuthEmail(e.target.value)}
+                className="w-full rounded-lg border border-teal-200 px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-teal-400"
+              />
+              <input
+                type="password"
+                autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
+                placeholder="Пароль"
+                value={authPassword}
+                onChange={(e) => setAuthPassword(e.target.value)}
+                className="w-full rounded-lg border border-teal-200 px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-teal-400"
+              />
+              {authMode === 'register' && (
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder="Пароль ещё раз"
+                  value={authPassword2}
+                  onChange={(e) => setAuthPassword2(e.target.value)}
+                  className="w-full rounded-lg border border-teal-200 px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-teal-400"
+                />
               )}
-              {supabaseConfigured && session?.user && (
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-teal-50 px-3 py-2 text-sm text-teal-900">
-                  <span className="min-w-0 truncate font-medium">{session.user.email}</span>
-                  <button
-                    type="button"
-                    disabled={!supabase}
-                    onClick={async () => {
-                      setAuthErr(null)
-                      setAuthInfo(null)
-                      if (!supabase) return
-                      await supabase.auth.signOut()
-                    }}
-                    className="shrink-0 rounded-md border border-teal-300 px-2.5 py-1 text-xs text-teal-800 hover:bg-white disabled:opacity-50"
-                  >
-                    Выйти
-                  </button>
-                </div>
-              )}
-              {supabaseConfigured && !session?.user && (
-                <div className="mt-3 space-y-3">
-                  <div className="flex rounded-lg bg-teal-100/80 p-0.5 text-sm">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAuthMode('login')
-                        setAuthErr(null)
-                        setAuthInfo(null)
-                      }}
-                      className={`flex-1 rounded-md px-3 py-2 font-medium transition ${
-                        authMode === 'login'
-                          ? 'bg-white text-teal-900 shadow'
-                          : 'text-teal-800'
-                      }`}
-                    >
-                      Вход
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAuthMode('register')
-                        setAuthErr(null)
-                        setAuthInfo(null)
-                      }}
-                      className={`flex-1 rounded-md px-3 py-2 font-medium transition ${
-                        authMode === 'register'
-                          ? 'bg-white text-teal-900 shadow'
-                          : 'text-teal-800'
-                      }`}
-                    >
-                      Регистрация
-                    </button>
-                  </div>
-                  <input
-                    type="email"
-                    autoComplete="email"
-                    inputMode="email"
-                    placeholder="Эл. почта"
-                    value={authEmail}
-                    onChange={(e) => setAuthEmail(e.target.value)}
-                    className="w-full rounded-lg border border-teal-200 px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-teal-400"
-                  />
-                  <input
-                    type="password"
-                    autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
-                    placeholder="Пароль"
-                    value={authPassword}
-                    onChange={(e) => setAuthPassword(e.target.value)}
-                    className="w-full rounded-lg border border-teal-200 px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-teal-400"
-                  />
-                  {authMode === 'register' && (
-                    <input
-                      type="password"
-                      autoComplete="new-password"
-                      placeholder="Пароль ещё раз"
-                      value={authPassword2}
-                      onChange={(e) => setAuthPassword2(e.target.value)}
-                      className="w-full rounded-lg border border-teal-200 px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-teal-400"
-                    />
-                  )}
-                  <button
-                    type="button"
-                    disabled={!supabase}
-                    onClick={async () => {
-                      setAuthErr(null)
-                      setAuthInfo(null)
-                      if (!supabase) return
-                      const email = authEmail.trim()
-                      if (!email) {
-                        setAuthErr('Укажите почту')
-                        return
-                      }
-                      if (authMode === 'login') {
-                        const { error } = await supabase.auth.signInWithPassword({
-                          email,
-                          password: authPassword,
-                        })
-                        if (error) setAuthErr(error.message)
-                        else {
-                          setDataSource('supabase')
-                          saveSettings({ dataSource: 'supabase' })
-                        }
-                        return
-                      }
-                      if (authPassword.length < 6) {
-                        setAuthErr('Пароль не короче 6 символов')
-                        return
-                      }
-                      if (authPassword !== authPassword2) {
-                        setAuthErr('Пароли не совпадают')
-                        return
-                      }
-                      const { data, error } = await supabase.auth.signUp({
-                        email,
-                        password: authPassword,
-                        options: {
-                          emailRedirectTo: new URL(
-                            import.meta.env.BASE_URL,
-                            window.location.origin,
-                          ).href,
-                        },
-                      })
-                      if (error) setAuthErr(error.message)
-                      else {
-                        setDataSource('supabase')
-                        saveSettings({ dataSource: 'supabase' })
-                        if (data.user && !data.session) {
-                          setAuthInfo('Откройте письмо и подтвердите адрес.')
-                        } else {
-                          setAuthPassword('')
-                          setAuthPassword2('')
-                        }
-                      }
-                    }}
-                    className="w-full rounded-lg bg-teal-700 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-50"
-                  >
-                    {authMode === 'login' ? 'Войти' : 'Создать аккаунт'}
-                  </button>
-                </div>
-              )}
-              {syncErr && (
-                <p className="mt-2 text-sm text-rose-700">{syncErr}</p>
-              )}
-              {authErr && (
-                <p className="mt-2 text-sm text-rose-700">{authErr}</p>
-              )}
-              {authInfo && (
-                <p className="mt-2 text-sm text-emerald-800">{authInfo}</p>
-              )}
-            </span>
-          </label>
+              <button
+                type="button"
+                disabled={!supabase}
+                onClick={async () => {
+                  setAuthErr(null)
+                  setAuthInfo(null)
+                  if (!supabase) return
+                  const email = authEmail.trim()
+                  if (!email) {
+                    setAuthErr('Укажите почту')
+                    return
+                  }
+                  if (authMode === 'login') {
+                    const { error } = await supabase.auth.signInWithPassword({
+                      email,
+                      password: authPassword,
+                    })
+                    if (error) setAuthErr(error.message)
+                    return
+                  }
+                  if (authPassword.length < 6) {
+                    setAuthErr('Пароль не короче 6 символов')
+                    return
+                  }
+                  if (authPassword !== authPassword2) {
+                    setAuthErr('Пароли не совпадают')
+                    return
+                  }
+                  const { data, error } = await supabase.auth.signUp({
+                    email,
+                    password: authPassword,
+                    options: {
+                      emailRedirectTo: new URL(
+                        import.meta.env.BASE_URL,
+                        window.location.origin,
+                      ).href,
+                    },
+                  })
+                  if (error) setAuthErr(error.message)
+                  else {
+                    if (data.user && !data.session) {
+                      setAuthInfo('Откройте письмо и подтвердите адрес.')
+                    } else {
+                      setAuthPassword('')
+                      setAuthPassword2('')
+                    }
+                  }
+                }}
+                className="w-full rounded-lg bg-teal-700 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-50"
+              >
+                {authMode === 'login' ? 'Войти' : 'Создать аккаунт'}
+              </button>
+            </div>
+          )}
+          {syncErr && (
+            <p className="text-sm text-rose-700">{syncErr}</p>
+          )}
+          {authErr && (
+            <p className="text-sm text-rose-700">{authErr}</p>
+          )}
+          {authInfo && (
+            <p className="text-sm text-emerald-800">{authInfo}</p>
+          )}
         </div>
         <h3 className="mb-3 mt-6 text-base font-semibold text-teal-900">
           Экспорт и импорт
@@ -807,14 +690,9 @@ export default function App() {
         <div className="mb-4 grid gap-4 lg:mb-6 lg:grid-cols-[minmax(0,14rem)_minmax(0,1fr)]">
           <div className="min-w-0">
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-teal-700">
-              Месяц
+              Сегодня
             </p>
-            <MiniCalendar
-              y={y}
-              m0={m0}
-              selectedD={selectedD}
-              onPick={setSelectedD}
-            />
+            <MiniCalendar />
             <p className="mt-2 text-[11px] leading-snug text-teal-800 sm:mt-3 sm:text-xs">
               Негативная: отметка — срыв, пусто — успех.
             </p>

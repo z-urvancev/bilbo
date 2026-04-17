@@ -16,44 +16,16 @@ export function buildSeed(now: Date): Persisted {
       monthlyGoal: 20,
     },
     {
-      id: 'seed-med',
-      name: 'Медитация',
-      emoji: '🧘‍♀️',
-      negative: false,
-      monthlyGoal: 25,
-    },
-    {
-      id: 'seed-fruit',
-      name: 'Фрукты',
-      emoji: '🍏',
-      negative: false,
-      monthlyGoal: 15,
-    },
-    {
-      id: 'seed-steps',
-      name: '10 000 шагов',
-      emoji: '🏃',
+      id: 'seed-walk',
+      name: 'Прогулка',
+      emoji: '🚶',
       negative: false,
       monthlyGoal: 22,
     },
     {
-      id: 'seed-water',
-      name: '2 л воды',
-      emoji: '💧',
-      negative: false,
-      monthlyGoal: 28,
-    },
-    {
-      id: 'seed-gym',
-      name: 'Зал',
-      emoji: '🏋️',
-      negative: false,
-      monthlyGoal: 12,
-    },
-    {
-      id: 'seed-smoke',
-      name: 'Без сигарет',
-      emoji: '🚭',
+      id: 'seed-neg',
+      name: 'Без сладкого',
+      emoji: '🍫',
       negative: true,
       monthlyGoal: 0,
     },
@@ -74,14 +46,10 @@ export function buildSeed(now: Date): Persisted {
   for (let d = 1; d <= dim; d++) {
     const pastOrToday = d <= today
 
-    if (pastOrToday && d % 4 !== 0) setPos('seed-yoga', d)
-    if (pastOrToday && d % 5 !== 0) setPos('seed-med', d)
-    if (pastOrToday && d % 2 === 0) setPos('seed-fruit', d)
-    if (pastOrToday && d % 3 !== 1) setPos('seed-steps', d)
-    if (pastOrToday) setPos('seed-water', d)
-    if (pastOrToday && (d % 7 === 2 || d % 7 === 5)) setPos('seed-gym', d)
+    if (pastOrToday && d % 3 !== 0) setPos('seed-yoga', d)
+    if (pastOrToday && d % 2 === 0) setPos('seed-walk', d)
 
-    if (pastOrToday && (d === 3 || d === 10 || d === 17)) setNegSlip('seed-smoke', d)
+    if (pastOrToday && (d === 5 || d === 12 || d === 19)) setNegSlip('seed-neg', d)
   }
 
   return { habits, completions }
