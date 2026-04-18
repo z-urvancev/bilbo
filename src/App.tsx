@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from 'react'
 import type { Session } from '@supabase/supabase-js'
 import {
   BarChart3,
@@ -50,6 +57,27 @@ import {
 } from './supabase/sync'
 
 const STORAGE_KEY = 'habit-calendar-v1'
+
+function openNativeDateInput(el: HTMLInputElement | null) {
+  if (!el) return
+  try {
+    const anyEl = el as HTMLInputElement & {
+      showPicker?: () => void | Promise<void>
+    }
+    if (typeof anyEl.showPicker === 'function') {
+      const r = anyEl.showPicker()
+      if (r != null && typeof (r as Promise<void>).catch === 'function') {
+        void (r as Promise<void>).catch(() => {
+          el.click()
+        })
+      }
+      return
+    }
+  } catch {
+    void 0
+  }
+  el.click()
+}
 
 function errText(e: unknown): string {
   if (e == null) return 'Неизвестная ошибка'
@@ -227,6 +255,55 @@ function Cell({
   )
 }
 
+function ClockMenuDateRow({
+  habitId,
+  mode,
+  label,
+  rowClassName,
+  textClassName,
+  pickHabitIdRef,
+  pickModeRef,
+  onPick,
+}: {
+  habitId: string
+  mode: 'postpone' | 'deadline'
+  label: string
+  rowClassName: string
+  textClassName: string
+  pickHabitIdRef: MutableRefObject<string | null>
+  pickModeRef: MutableRefObject<'postpone' | 'deadline' | null>
+  onPick: (value: string) => void
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  return (
+    <div className={`relative min-h-[2.75rem] ${rowClassName}`}>
+      <input
+        ref={inputRef}
+        type="date"
+        tabIndex={-1}
+        className="pointer-events-none fixed left-0 top-0 -z-10 h-px w-px opacity-0"
+        style={{ fontSize: 16 }}
+        onChange={(e) => {
+          const v = e.target.value
+          if (v) onPick(v)
+          e.target.value = ''
+        }}
+      />
+      <button
+        type="button"
+        className={`flex min-h-[2.75rem] w-full touch-manipulation items-center px-3 py-2 text-left text-sm ${textClassName}`}
+        onClick={() => {
+          pickHabitIdRef.current = habitId
+          pickModeRef.current = mode
+          openNativeDateInput(inputRef.current)
+        }}
+      >
+        {label}
+      </button>
+    </div>
+  )
+}
+
 export default function App() {
   const [habits, setHabits] = useState<Habit[]>(() => loadPersisted().habits)
   const [completions, setCompletions] = useState<Completions>(
@@ -278,7 +355,6 @@ export default function App() {
   const flushTimerRef = useRef<number | undefined>(undefined)
   const goalDebouncersRef = useRef<Record<string, number>>({})
   const mobileWeekPickerRef = useRef<HTMLInputElement | null>(null)
-  const clockDateRef = useRef<HTMLInputElement | null>(null)
   const clockPickHabitIdRef = useRef<string | null>(null)
   const clockPickModeRef = useRef<'postpone' | 'deadline' | null>(null)
 
@@ -335,14 +411,18 @@ export default function App() {
 
   useEffect(() => {
     if (moreMenuHabitId == null && clockMenuHabitId == null) return
-    const onDoc = (ev: MouseEvent) => {
+    const onDoc = (ev: PointerEvent | TouchEvent) => {
       const t = ev.target
       if (t instanceof Element && t.closest('[data-habit-menu-root]')) return
       setMoreMenuHabitId(null)
       setClockMenuHabitId(null)
     }
-    document.addEventListener('mousedown', onDoc)
-    return () => document.removeEventListener('mousedown', onDoc)
+    document.addEventListener('pointerdown', onDoc)
+    document.addEventListener('touchstart', onDoc, { passive: true })
+    return () => {
+      document.removeEventListener('pointerdown', onDoc)
+      document.removeEventListener('touchstart', onDoc)
+    }
   }, [moreMenuHabitId, clockMenuHabitId])
 
   const flushPendingInternal = useCallback(async () => {
@@ -402,43 +482,10 @@ export default function App() {
       }
       clockPickHabitIdRef.current = null
       clockPickModeRef.current = null
-    },
-    [dispatch],
-  )
-
-  const openClockPicker = useCallback(
-    (
-      habitId: string,
-      mode: 'postpone' | 'deadline',
-      anchor: HTMLElement | null,
-    ) => {
-      clockPickHabitIdRef.current = habitId
-      clockPickModeRef.current = mode
       setClockMenuHabitId(null)
       setMoreMenuHabitId(null)
-      window.requestAnimationFrame(() => {
-        const el = clockDateRef.current
-        if (!el) return
-        if (anchor) {
-          const r = anchor.getBoundingClientRect()
-          const pad = 4
-          el.style.position = 'fixed'
-          el.style.left = `${Math.min(
-            Math.max(pad, r.left),
-            window.innerWidth - pad,
-          )}px`
-          el.style.top = `${Math.min(
-            Math.max(pad, r.bottom),
-            window.innerHeight - pad,
-          )}px`
-          el.style.width = '1px'
-          el.style.height = '1px'
-        }
-        if (typeof el.showPicker === 'function') el.showPicker()
-        else el.click()
-      })
     },
-    [],
+    [dispatch],
   )
 
   useEffect(() => {
@@ -610,20 +657,6 @@ export default function App() {
     setM0(parsed.getMonth())
     setSelectedD(parsed.getDate())
   }
-
-  const openMobileWeekPicker = useCallback(() => {
-    const el = mobileWeekPickerRef.current
-    if (!el) return
-    try {
-      if (typeof el.showPicker === 'function') {
-        void el.showPicker()
-      } else {
-        el.click()
-      }
-    } catch {
-      el.click()
-    }
-  }, [])
 
   const profileName =
     (session?.user?.user_metadata?.display_name as string | undefined)?.trim() ||
@@ -915,14 +948,14 @@ export default function App() {
                     type="date"
                     value={selectedDateValue}
                     onChange={(e) => selectDate(e.target.value)}
-                    className="pointer-events-none absolute h-px w-px overflow-hidden opacity-0"
-                    style={{ fontSize: 16, clip: 'rect(0,0,0,0)' }}
                     tabIndex={-1}
+                    className="pointer-events-none fixed left-0 top-0 -z-10 h-px w-px opacity-0"
+                    style={{ fontSize: 16 }}
                     aria-hidden
                   />
                   <button
                     type="button"
-                    onClick={openMobileWeekPicker}
+                    onClick={() => openNativeDateInput(mobileWeekPickerRef.current)}
                     className="flex min-h-[2.75rem] w-full touch-manipulation items-center justify-center rounded-2xl bg-white px-3 py-2.5 text-center text-base font-semibold leading-tight text-neutral-900 shadow-sm ring-1 ring-black/5 active:bg-neutral-50"
                     aria-label="Выбрать дату недели"
                   >
@@ -1218,24 +1251,26 @@ export default function App() {
                   </button>
                   {clockMenuHabitId === h.id && (
                     <div className="absolute bottom-full right-0 z-40 mb-1 min-w-[12rem] rounded-lg border border-teal-200 bg-white py-1 shadow-lg">
-                      <button
-                        type="button"
-                        className="block w-full px-3 py-2 text-left text-sm text-teal-900 hover:bg-teal-50"
-                        onClick={(e) =>
-                          openClockPicker(h.id, 'postpone', e.currentTarget)
-                        }
-                      >
-                        Отложить до
-                      </button>
-                      <button
-                        type="button"
-                        className="block w-full px-3 py-2 text-left text-sm text-teal-900 hover:bg-teal-50"
-                        onClick={(e) =>
-                          openClockPicker(h.id, 'deadline', e.currentTarget)
-                        }
-                      >
-                        Соблюдать до
-                      </button>
+                      <ClockMenuDateRow
+                        habitId={h.id}
+                        mode="postpone"
+                        label="Отложить до"
+                        rowClassName="rounded-md hover:bg-teal-50"
+                        textClassName="text-teal-900"
+                        pickHabitIdRef={clockPickHabitIdRef}
+                        pickModeRef={clockPickModeRef}
+                        onPick={applyClockDate}
+                      />
+                      <ClockMenuDateRow
+                        habitId={h.id}
+                        mode="deadline"
+                        label="Соблюдать до"
+                        rowClassName="rounded-md hover:bg-teal-50"
+                        textClassName="text-teal-900"
+                        pickHabitIdRef={clockPickHabitIdRef}
+                        pickModeRef={clockPickModeRef}
+                        onPick={applyClockDate}
+                      />
                     </div>
                   )}
                   {moreMenuHabitId === h.id && (
@@ -1687,32 +1722,26 @@ export default function App() {
                               </button>
                               {clockMenuHabitId === h.id && (
                                 <div className="absolute right-0 top-full z-40 mt-1 min-w-[12rem] rounded-lg border border-neutral-200 bg-white py-1 shadow-lg">
-                                  <button
-                                    type="button"
-                                    className="block w-full px-3 py-2 text-left text-sm text-neutral-800 hover:bg-neutral-50"
-                                    onClick={(e) =>
-                                      openClockPicker(
-                                        h.id,
-                                        'postpone',
-                                        e.currentTarget,
-                                      )
-                                    }
-                                  >
-                                    Отложить до
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="block w-full px-3 py-2 text-left text-sm text-neutral-800 hover:bg-neutral-50"
-                                    onClick={(e) =>
-                                      openClockPicker(
-                                        h.id,
-                                        'deadline',
-                                        e.currentTarget,
-                                      )
-                                    }
-                                  >
-                                    Соблюдать до
-                                  </button>
+                                  <ClockMenuDateRow
+                                    habitId={h.id}
+                                    mode="postpone"
+                                    label="Отложить до"
+                                    rowClassName="rounded-md hover:bg-neutral-50"
+                                    textClassName="text-neutral-800"
+                                    pickHabitIdRef={clockPickHabitIdRef}
+                                    pickModeRef={clockPickModeRef}
+                                    onPick={applyClockDate}
+                                  />
+                                  <ClockMenuDateRow
+                                    habitId={h.id}
+                                    mode="deadline"
+                                    label="Соблюдать до"
+                                    rowClassName="rounded-md hover:bg-neutral-50"
+                                    textClassName="text-neutral-800"
+                                    pickHabitIdRef={clockPickHabitIdRef}
+                                    pickModeRef={clockPickModeRef}
+                                    onPick={applyClockDate}
+                                  />
                                 </div>
                               )}
                               {moreMenuHabitId === h.id && (
@@ -1908,32 +1937,26 @@ export default function App() {
                             </button>
                             {clockMenuHabitId === h.id && (
                               <div className="absolute bottom-full right-0 z-50 mb-1 min-w-[12rem] rounded-lg border border-teal-200 bg-white py-1 shadow-lg">
-                                <button
-                                  type="button"
-                                  className="block w-full px-3 py-2 text-left text-sm text-teal-900 hover:bg-teal-50"
-                                  onClick={(e) =>
-                                    openClockPicker(
-                                      h.id,
-                                      'postpone',
-                                      e.currentTarget,
-                                    )
-                                  }
-                                >
-                                  Отложить до
-                                </button>
-                                <button
-                                  type="button"
-                                  className="block w-full px-3 py-2 text-left text-sm text-teal-900 hover:bg-teal-50"
-                                  onClick={(e) =>
-                                    openClockPicker(
-                                      h.id,
-                                      'deadline',
-                                      e.currentTarget,
-                                    )
-                                  }
-                                >
-                                  Соблюдать до
-                                </button>
+                                <ClockMenuDateRow
+                                  habitId={h.id}
+                                  mode="postpone"
+                                  label="Отложить до"
+                                  rowClassName="rounded-md hover:bg-teal-50"
+                                  textClassName="text-teal-900"
+                                  pickHabitIdRef={clockPickHabitIdRef}
+                                  pickModeRef={clockPickModeRef}
+                                  onPick={applyClockDate}
+                                />
+                                <ClockMenuDateRow
+                                  habitId={h.id}
+                                  mode="deadline"
+                                  label="Соблюдать до"
+                                  rowClassName="rounded-md hover:bg-teal-50"
+                                  textClassName="text-teal-900"
+                                  pickHabitIdRef={clockPickHabitIdRef}
+                                  pickModeRef={clockPickModeRef}
+                                  onPick={applyClockDate}
+                                />
                               </div>
                             )}
                             {moreMenuHabitId === h.id && (
@@ -2609,16 +2632,6 @@ export default function App() {
           </div>
         </div>
       )}
-      <input
-        ref={clockDateRef}
-        type="date"
-        className="pointer-events-auto fixed z-[200] h-px w-px opacity-0"
-        aria-hidden
-        onChange={(e) => {
-          applyClockDate(e.target.value)
-          e.target.value = ''
-        }}
-      />
     </div>
   )
 }
