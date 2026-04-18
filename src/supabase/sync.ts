@@ -1,5 +1,22 @@
 import type { Completions, Habit, Persisted } from '../types'
+import { buildSeed } from '../seed'
 import { supabase } from '../lib/supabase'
+import { applyEvent } from './eventReducer'
+
+export type SyncEventRow = {
+  seq: number
+  user_id: string
+  occurred_at: string
+  client_event_id: string
+  kind: string
+  payload: unknown
+}
+
+export type PendingOutgoing = {
+  client_event_id: string
+  kind: string
+  payload: unknown
+}
 
 type DbHabitRow = {
   id: string
@@ -35,101 +52,170 @@ function completionsFromMarks(rows: DbMarkRow[]): Completions {
   return c
 }
 
-export async function pullFromSupabase(userId: string): Promise<Persisted | null> {
+async function legacyPullPersisted(userId: string): Promise<Persisted | null> {
   if (!supabase) return null
   const { data: hRows, error: e1 } = await supabase
     .from('habits')
     .select('id, user_id, name, emoji, negative, monthly_goal')
     .eq('user_id', userId)
-  if (e1) throw e1
+  if (e1) {
+    const code = (e1 as { code?: string }).code
+    if (code === '42P01' || code === 'PGRST205') return null
+    throw e1
+  }
+  if (!hRows?.length) return null
   const { data: mRows, error: e2 } = await supabase
     .from('habit_marks')
     .select('habit_id, user_id, day')
     .eq('user_id', userId)
-  if (e2) throw e2
+  if (e2) {
+    const code = (e2 as { code?: string }).code
+    if (code === '42P01' || code === 'PGRST205') {
+      return {
+        habits: (hRows as DbHabitRow[]).map(habitFromRow),
+        completions: {},
+      }
+    }
+    throw e2
+  }
   const habits = (hRows as DbHabitRow[]).map(habitFromRow)
   const completions = completionsFromMarks((mRows ?? []) as DbMarkRow[])
   return { habits, completions }
 }
 
-export async function pushToSupabase(
+async function fetchEventsPage(
   userId: string,
-  habits: Habit[],
-  completions: Completions,
-): Promise<void> {
-  if (!supabase) return
-  const localIds = habits.map((h) => h.id)
-  const { data: remoteHabits, error: e0 } = await supabase
-    .from('habits')
-    .select('id')
+  afterSeq: number,
+  limit: number,
+): Promise<SyncEventRow[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('sync_events')
+    .select('seq,user_id,occurred_at,client_event_id,kind,payload')
     .eq('user_id', userId)
-  if (e0) throw e0
-  const toRemove = (remoteHabits ?? [])
-    .map((r: { id: string }) => r.id)
-    .filter((id: string) => !localIds.includes(id))
-  if (toRemove.length) {
-    const { error: eDel } = await supabase.from('habits').delete().in('id', toRemove)
-    if (eDel) throw eDel
+    .gt('seq', afterSeq)
+    .order('seq', { ascending: true })
+    .limit(limit)
+  if (error) throw error
+  return (data ?? []) as SyncEventRow[]
+}
+
+export async function fetchAllEventsSince(
+  userId: string,
+  afterSeq: number,
+): Promise<SyncEventRow[]> {
+  const all: SyncEventRow[] = []
+  let cursor = afterSeq
+  while (true) {
+    const batch = await fetchEventsPage(userId, cursor, 800)
+    if (batch.length === 0) break
+    all.push(...batch)
+    cursor = batch[batch.length - 1]!.seq
   }
-  if (habits.length) {
-    const rows = habits.map((h) => ({
-      id: h.id,
-      user_id: userId,
-      name: h.name,
-      emoji: h.emoji,
-      negative: h.negative,
-      monthly_goal: h.monthlyGoal,
-      updated_at: new Date().toISOString(),
-    }))
-    const { error: eUp } = await supabase.from('habits').upsert(rows, {
-      onConflict: 'user_id,id',
-    })
-    if (eUp) throw eUp
+  return all
+}
+
+export async function pushEventBatch(
+  userId: string,
+  batch: PendingOutgoing[],
+): Promise<number> {
+  if (!supabase || batch.length === 0) return 0
+  const rows = batch.map((b) => ({
+    user_id: userId,
+    client_event_id: b.client_event_id,
+    kind: b.kind,
+    payload: b.payload,
+  }))
+  const { data, error } = await supabase
+    .from('sync_events')
+    .insert(rows)
+    .select('seq')
+  if (error) {
+    const code = (error as { code?: string }).code
+    if (code === '23505') return 0
+    throw error
   }
-  const { data: existingMarks, error: e1 } = await supabase
-    .from('habit_marks')
-    .select('habit_id, day')
-    .eq('user_id', userId)
-  if (e1) throw e1
-  const desired = new Set<string>()
-  for (const h of habits) {
-    const m = completions[h.id]
-    if (!m) continue
-    for (const day of Object.keys(m)) {
-      if (m[day]) desired.add(`${h.id}|${day}`)
+  const seqs = (data as { seq: number }[]).map((r) => r.seq)
+  return seqs.length ? Math.max(...seqs) : 0
+}
+
+export async function loadPersistedFromEvents(
+  userId: string,
+): Promise<{ state: Persisted; lastSeq: number }> {
+  if (!supabase) {
+    return { state: buildSeed(new Date()), lastSeq: 0 }
+  }
+  let events = await fetchAllEventsSince(userId, 0)
+  if (events.length === 0) {
+    const legacy = await legacyPullPersisted(userId)
+    if (legacy && legacy.habits.length > 0) {
+      await pushEventBatch(userId, [
+        {
+          client_event_id: `legacy-${userId}`,
+          kind: 'state_snapshot',
+          payload: legacy,
+        },
+      ])
+      events = await fetchAllEventsSince(userId, 0)
     }
   }
-  const existing = new Set(
-    (existingMarks as { habit_id: string; day: string }[]).map(
-      (r) => `${r.habit_id}|${r.day}`,
-    ),
-  )
-  const toDelete: { habit_id: string; day: string }[] = []
-  for (const key of existing) {
-    if (!desired.has(key)) {
-      const [habit_id, day] = key.split('|')
-      if (habit_id && day) toDelete.push({ habit_id, day })
-    }
+  if (events.length === 0) {
+    const seed = buildSeed(new Date())
+    await pushEventBatch(userId, [
+      {
+        client_event_id: `bootstrap-${userId}`,
+        kind: 'state_snapshot',
+        payload: seed,
+      },
+    ])
+    events = await fetchAllEventsSince(userId, 0)
   }
-  const toInsert: { habit_id: string; user_id: string; day: string }[] = []
-  for (const key of desired) {
-    if (!existing.has(key)) {
-      const [habit_id, day] = key.split('|')
-      if (habit_id && day)
-        toInsert.push({ habit_id, user_id: userId, day })
-    }
+  let state: Persisted = { habits: [], completions: {} }
+  let lastSeq = 0
+  for (const row of events) {
+    state = applyEvent(state, { kind: row.kind, payload: row.payload })
+    lastSeq = row.seq
   }
-  for (const row of toDelete) {
-    const { error: ed } = await supabase
-      .from('habit_marks')
-      .delete()
-      .eq('habit_id', row.habit_id)
-      .eq('day', row.day)
-      .eq('user_id', userId)
-    if (ed) throw ed
+  return { state, lastSeq }
+}
+
+export function mergeRemoteEvents(
+  current: Persisted,
+  rows: SyncEventRow[],
+): { state: Persisted; lastSeq: number } {
+  let state = current
+  let lastSeq = 0
+  for (const row of rows) {
+    state = applyEvent(state, { kind: row.kind, payload: row.payload })
+    lastSeq = row.seq
   }
-  if (toInsert.length) {
-    const { error: ei } = await supabase.from('habit_marks').insert(toInsert)
-    if (ei) throw ei
+  return { state, lastSeq }
+}
+
+export function subscribeToSyncEvents(
+  userId: string,
+  onNewData: () => void,
+): () => void {
+  const client = supabase
+  if (!client) return () => {}
+  const ch = client
+    .channel(`sync_events:${userId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'sync_events',
+        filter: `user_id=eq.${userId}`,
+      },
+      () => {
+        onNewData()
+      },
+    )
+    .subscribe()
+  return () => {
+    void client.removeChannel(ch)
   }
 }
+
+export { applyEvent } from './eventReducer'

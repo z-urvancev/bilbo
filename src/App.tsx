@@ -31,7 +31,15 @@ import {
   parseBundleJson,
 } from './fileSync'
 import { supabase, supabaseConfigured } from './lib/supabase'
-import { pullFromSupabase, pushToSupabase } from './supabase/sync'
+import {
+  applyEvent,
+  fetchAllEventsSince,
+  loadPersistedFromEvents,
+  mergeRemoteEvents,
+  pushEventBatch,
+  subscribeToSyncEvents,
+  type PendingOutgoing,
+} from './supabase/sync'
 
 const STORAGE_KEY = 'habit-calendar-v1'
 
@@ -224,6 +232,10 @@ export default function App() {
   const completionsRef = useRef(completions)
   habitsRef.current = habits
   completionsRef.current = completions
+  const lastSeqRef = useRef(0)
+  const pendingRef = useRef<PendingOutgoing[]>([])
+  const flushTimerRef = useRef<number | undefined>(undefined)
+  const goalDebouncersRef = useRef<Record<string, number>>({})
 
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 640)
@@ -254,30 +266,77 @@ export default function App() {
     savePersisted({ habits, completions })
   }, [habits, completions])
 
+  const flushPendingInternal = useCallback(async () => {
+    if (!session?.user || !supabase || pendingRef.current.length === 0) return
+    const uid = session.user.id
+    const batch = [...pendingRef.current]
+    pendingRef.current = []
+    try {
+      setSyncErr(null)
+      const maxSeq = await pushEventBatch(uid, batch)
+      if (maxSeq > lastSeqRef.current) lastSeqRef.current = maxSeq
+    } catch (e) {
+      pendingRef.current = [...batch, ...pendingRef.current]
+      setSyncErr(errText(e))
+    }
+  }, [session?.user])
+
+  const dispatch = useCallback(
+    (kind: string, payload: unknown, fixedClientId?: string) => {
+      const client_event_id = fixedClientId ?? crypto.randomUUID()
+      const next = applyEvent(
+        { habits: habitsRef.current, completions: completionsRef.current },
+        { kind, payload },
+      )
+      setHabits(next.habits)
+      setCompletions(next.completions)
+      if (session?.user && supabaseConfigured && supabaseSyncPhase === 'ready') {
+        pendingRef.current.push({ client_event_id, kind, payload })
+        if (flushTimerRef.current !== undefined) {
+          window.clearTimeout(flushTimerRef.current)
+        }
+        flushTimerRef.current = window.setTimeout(() => {
+          flushTimerRef.current = undefined
+          void flushPendingInternal()
+        }, 450)
+      }
+    },
+    [session?.user, supabaseSyncPhase, flushPendingInternal],
+  )
+
+  const pullIncremental = useCallback(async () => {
+    if (!session?.user || supabaseSyncPhase !== 'ready' || !supabase) return
+    const uid = session.user.id
+    await flushPendingInternal()
+    const rows = await fetchAllEventsSince(uid, lastSeqRef.current)
+    if (rows.length === 0) return
+    const { state, lastSeq } = mergeRemoteEvents(
+      { habits: habitsRef.current, completions: completionsRef.current },
+      rows,
+    )
+    lastSeqRef.current = lastSeq
+    setHabits(state.habits)
+    setCompletions(state.completions)
+  }, [session?.user, supabaseSyncPhase, flushPendingInternal])
+
   useEffect(() => {
     if (!session?.user || !supabaseConfigured) {
       setSupabaseSyncPhase('idle')
+      lastSeqRef.current = 0
+      pendingRef.current = []
       return
     }
     let cancelled = false
     setSyncErr(null)
     setSupabaseSyncPhase('pulling')
+    pendingRef.current = []
     void (async () => {
       try {
-        const r = await pullFromSupabase(session.user.id)
+        const { state, lastSeq } = await loadPersistedFromEvents(session.user.id)
         if (cancelled) return
-        if (!r) {
-          setSupabaseSyncPhase('idle')
-          return
-        }
-        if (r.habits.length > 0) {
-          setHabits(r.habits)
-          setCompletions(r.completions)
-        } else {
-          const seed = buildSeed(new Date())
-          setHabits(seed.habits)
-          setCompletions(seed.completions)
-        }
+        lastSeqRef.current = lastSeq
+        setHabits(state.habits)
+        setCompletions(state.completions)
         if (!cancelled) setSupabaseSyncPhase('ready')
       } catch (e) {
         if (!cancelled) {
@@ -292,21 +351,21 @@ export default function App() {
   }, [session?.user?.id])
 
   useEffect(() => {
-    if (!session?.user || !supabaseConfigured) return
-    if (supabaseSyncPhase !== 'ready') return
+    const onVis = () => {
+      if (document.visibilityState === 'visible') void pullIncremental()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [pullIncremental])
+
+  useEffect(() => {
+    if (!session?.user || supabaseSyncPhase !== 'ready' || !supabaseConfigured)
+      return
     const uid = session.user.id
-    const t = window.setTimeout(() => {
-      void (async () => {
-        try {
-          setSyncErr(null)
-          await pushToSupabase(uid, habitsRef.current, completionsRef.current)
-        } catch (e) {
-          setSyncErr(errText(e))
-        }
-      })()
-    }, 650)
-    return () => window.clearTimeout(t)
-  }, [habits, completions, session?.user?.id, supabaseSyncPhase])
+    return subscribeToSyncEvents(uid, () => {
+      void pullIncremental()
+    })
+  }, [session?.user?.id, supabaseSyncPhase, pullIncremental])
 
   const dim = daysInMonth(y, m0)
   const today = new Date()
@@ -405,15 +464,14 @@ export default function App() {
     session?.user?.email?.split('@')[0] ||
     'Профиль'
 
-  const toggleDay = useCallback((habitId: string, key: string) => {
-    setCompletions((prev) => {
-      const h = { ...(prev[habitId] ?? {}) }
-      const cur = h[key]
-      if (cur) delete h[key]
-      else h[key] = true
-      return { ...prev, [habitId]: h }
-    })
-  }, [])
+  const toggleDay = useCallback(
+    (habitId: string, key: string) => {
+      const cur = completionsRef.current[habitId]?.[key]
+      const marked = !cur
+      dispatch('mark_set', { habitId, dayKey: key, marked })
+    },
+    [dispatch],
+  )
 
   const addHabit = () => {
     const name = formName.trim()
@@ -428,7 +486,7 @@ export default function App() {
         Math.min(31, Math.floor(Number(formGoalInput)) || 20),
       ),
     }
-    setHabits((prev) => [...prev, h])
+    dispatch('habit_upsert', h)
     setModal(false)
     setFormName('')
     setFormEmoji('🎯')
@@ -438,12 +496,7 @@ export default function App() {
 
   const removeHabit = (id: string) => {
     setEditingHabitId((e) => (e === id ? null : e))
-    setHabits((prev) => prev.filter((x) => x.id !== id))
-    setCompletions((prev) => {
-      const n = { ...prev }
-      delete n[id]
-      return n
-    })
+    dispatch('habit_delete', { id })
   }
 
   const cancelEditHabitName = () => {
@@ -458,9 +511,8 @@ export default function App() {
     setEditingHabitId(null)
     setEditingName('')
     if (!t) return
-    setHabits((prev) =>
-      prev.map((x) => (x.id === id ? { ...x, name: t } : x)),
-    )
+    const habit = habitsRef.current.find((x) => x.id === id)
+    if (habit) dispatch('habit_upsert', { ...habit, name: t })
   }
 
   const posHabits = useMemo(
@@ -781,6 +833,10 @@ export default function App() {
                         prev.map((x) => (x.id === h.id ? { ...x, name: next } : x)),
                       )
                     }}
+                    onBlur={() => {
+                      const habit = habitsRef.current.find((x) => x.id === h.id)
+                      if (habit) dispatch('habit_upsert', habit)
+                    }}
                     className="min-w-0 flex-1 rounded-lg border border-teal-200 bg-white px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-teal-300"
                   />
                 </div>
@@ -796,6 +852,13 @@ export default function App() {
                         x.id === h.id ? { ...x, monthlyGoal: next } : x,
                       ),
                     )
+                    const tid = goalDebouncersRef.current[h.id]
+                    if (tid !== undefined) window.clearTimeout(tid)
+                    goalDebouncersRef.current[h.id] = window.setTimeout(() => {
+                      const habit = habitsRef.current.find((x) => x.id === h.id)
+                      if (habit) dispatch('habit_upsert', habit)
+                      delete goalDebouncersRef.current[h.id]
+                    }, 500)
                   }}
                   className="rounded-lg border border-teal-200 bg-white px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-teal-300"
                 />
@@ -851,13 +914,38 @@ export default function App() {
                     const p = parseBundleJson(t)
                     if (!p) return
                     if (p.kind === 'full') {
-                      setHabits(p.data.habits)
-                      setCompletions(p.data.completions)
+                      const data = {
+                        habits: p.data.habits,
+                        completions: p.data.completions,
+                      }
+                      if (
+                        session?.user &&
+                        supabaseConfigured &&
+                        supabaseSyncPhase === 'ready'
+                      ) {
+                        dispatch('state_snapshot', data)
+                      } else {
+                        setHabits(data.habits)
+                        setCompletions(data.completions)
+                      }
                     } else {
-                      setHabits(p.habits)
-                      setCompletions((prev) =>
-                        mergeCompletionsForImportedHabits(p.habits, prev),
-                      )
+                      const merged = {
+                        habits: p.habits,
+                        completions: mergeCompletionsForImportedHabits(
+                          p.habits,
+                          completionsRef.current,
+                        ),
+                      }
+                      if (
+                        session?.user &&
+                        supabaseConfigured &&
+                        supabaseSyncPhase === 'ready'
+                      ) {
+                        dispatch('state_snapshot', merged)
+                      } else {
+                        setHabits(merged.habits)
+                        setCompletions(merged.completions)
+                      }
                     }
                   }
                   r.readAsText(f)
@@ -880,22 +968,23 @@ export default function App() {
             >
               <ChevronLeft className="h-5 w-5" />
             </button>
-            <button
-              type="button"
-              onClick={openMobileDatePicker}
-              className="rounded-lg border border-teal-300 bg-white px-3 py-2 text-sm font-medium text-teal-900 outline-none focus:ring-2 focus:ring-teal-300"
-            >
-              {mobileWeekRangeLabel}
-            </button>
-            <input
-              ref={mobileWeekPickerRef}
-              type="date"
-              value={selectedDateValue}
-              onChange={(e) => selectDate(e.target.value)}
-              className="pointer-events-none absolute h-0 w-0 opacity-0"
-              tabIndex={-1}
-              aria-hidden="true"
-            />
+            <div className="relative">
+              <button
+                type="button"
+                onClick={openMobileDatePicker}
+                className="rounded-lg border border-teal-300 bg-white px-3 py-2 text-sm font-medium text-teal-900 outline-none focus:ring-2 focus:ring-teal-300"
+              >
+                {mobileWeekRangeLabel}
+              </button>
+              <input
+                ref={mobileWeekPickerRef}
+                type="date"
+                value={selectedDateValue}
+                onChange={(e) => selectDate(e.target.value)}
+                className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
+                aria-label="Выбрать дату недели"
+              />
+            </div>
             <button
               type="button"
               onClick={() => moveMobileWeek(1)}
