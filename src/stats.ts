@@ -5,8 +5,12 @@ export function isSuccess(
   habit: Habit,
   raw: boolean | undefined,
 ): boolean {
+  if (habit.negative) {
+    if (raw === undefined) return true
+    return !raw
+  }
   if (raw === undefined) return false
-  return habit.negative ? !raw : raw
+  return raw
 }
 
 export function totalSuccessInMonth(
@@ -107,6 +111,48 @@ export function weekCompletionRate(
     }
   }
   return count ? Math.round((sum / count) * 1000) / 10 : 0
+}
+
+export function buildCompletionSeries(
+  habits: Habit[],
+  completions: Completions,
+  dynMode: 'day' | 'week' | 'month' | 'year',
+  y: number,
+  m0: number,
+): { rates: number[]; labels: string[] } {
+  if (dynMode === 'week') {
+    const w = monthWeekChunks(y, m0)
+    return {
+      rates: w.map((chunk) =>
+        weekCompletionRate(habits, completions, y, m0, chunk.startD, chunk.endD),
+      ),
+      labels: w.map((c) => `${c.startD}–${c.endD}`),
+    }
+  }
+  if (dynMode === 'day') {
+    const d0 = daysInMonth(y, m0)
+    return {
+      rates: Array.from({ length: d0 }, (_, i) =>
+        weekCompletionRate(habits, completions, y, m0, i + 1, i + 1),
+      ),
+      labels: Array.from({ length: d0 }, (_, i) => `${i + 1}`),
+    }
+  }
+  if (dynMode === 'month') {
+    return {
+      rates: Array.from({ length: 12 }, (_, m) =>
+        monthCompletionRate(habits, completions, y, m),
+      ),
+      labels: Array.from({ length: 12 }, (_, m) =>
+        new Date(y, m, 1).toLocaleDateString('ru-RU', { month: 'short' }),
+      ),
+    }
+  }
+  const years = [y - 4, y - 3, y - 2, y - 1, y]
+  return {
+    rates: years.map((yr) => yearCompletionRate(habits, completions, yr)),
+    labels: years.map((yr) => String(yr)),
+  }
 }
 
 export function monthCompletionRate(
