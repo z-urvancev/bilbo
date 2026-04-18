@@ -4,7 +4,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type MutableRefObject,
 } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import {
@@ -58,27 +57,6 @@ import {
 
 const STORAGE_KEY = 'habit-calendar-v1'
 
-function openNativeDateInput(el: HTMLInputElement | null) {
-  if (!el) return
-  try {
-    const anyEl = el as HTMLInputElement & {
-      showPicker?: () => void | Promise<void>
-    }
-    if (typeof anyEl.showPicker === 'function') {
-      const r = anyEl.showPicker()
-      if (r != null && typeof (r as Promise<void>).catch === 'function') {
-        void (r as Promise<void>).catch(() => {
-          el.click()
-        })
-      }
-      return
-    }
-  } catch {
-    void 0
-  }
-  el.click()
-}
-
 function errText(e: unknown): string {
   if (e == null) return 'Неизвестная ошибка'
   if (typeof e === 'string') return e
@@ -107,12 +85,17 @@ function errText(e: unknown): string {
 type Screen = 'tracker' | 'habits'
 type DynMode = 'day' | 'week' | 'month' | 'year'
 type MobileTrackerTab = 'marks' | 'analytics'
+type MobileMarksView = 'week' | 'month'
 type DayColumn = {
   key: string
   day: number
   weekday: string
   isToday: boolean
 }
+
+type CalendarTarget =
+  | { kind: 'mobileWeek' }
+  | { kind: 'clock'; habitId: string; mode: 'postpone' | 'deadline' }
 
 function WeekDot({
   habit,
@@ -255,55 +238,6 @@ function Cell({
   )
 }
 
-function ClockMenuDateRow({
-  habitId,
-  mode,
-  label,
-  rowClassName,
-  textClassName,
-  pickHabitIdRef,
-  pickModeRef,
-  onPick,
-}: {
-  habitId: string
-  mode: 'postpone' | 'deadline'
-  label: string
-  rowClassName: string
-  textClassName: string
-  pickHabitIdRef: MutableRefObject<string | null>
-  pickModeRef: MutableRefObject<'postpone' | 'deadline' | null>
-  onPick: (value: string) => void
-}) {
-  const inputRef = useRef<HTMLInputElement | null>(null)
-  return (
-    <div className={`relative min-h-[2.75rem] ${rowClassName}`}>
-      <input
-        ref={inputRef}
-        type="date"
-        tabIndex={-1}
-        className="pointer-events-none fixed left-0 top-0 -z-10 h-px w-px opacity-0"
-        style={{ fontSize: 16 }}
-        onChange={(e) => {
-          const v = e.target.value
-          if (v) onPick(v)
-          e.target.value = ''
-        }}
-      />
-      <button
-        type="button"
-        className={`flex min-h-[2.75rem] w-full touch-manipulation items-center px-3 py-2 text-left text-sm ${textClassName}`}
-        onClick={() => {
-          pickHabitIdRef.current = habitId
-          pickModeRef.current = mode
-          openNativeDateInput(inputRef.current)
-        }}
-      >
-        {label}
-      </button>
-    </div>
-  )
-}
-
 export default function App() {
   const [habits, setHabits] = useState<Habit[]>(() => loadPersisted().habits)
   const [completions, setCompletions] = useState<Completions>(
@@ -320,11 +254,10 @@ export default function App() {
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768)
   const [mobileTrackerTab, setMobileTrackerTab] =
     useState<MobileTrackerTab>('marks')
+  const [mobileMarksView, setMobileMarksView] = useState<MobileMarksView>('week')
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
   const [emojiPickerForId, setEmojiPickerForId] = useState<string | null>(null)
   const [goalInputDrafts, setGoalInputDrafts] = useState<Record<string, string>>({})
-  const [editingHabitId, setEditingHabitId] = useState<string | null>(null)
-  const [editingName, setEditingName] = useState('')
   const [formName, setFormName] = useState('')
   const [formEmoji, setFormEmoji] = useState('🎯')
   const [formGoalInput, setFormGoalInput] = useState('20')
@@ -354,9 +287,9 @@ export default function App() {
   const pendingRef = useRef<PendingOutgoing[]>([])
   const flushTimerRef = useRef<number | undefined>(undefined)
   const goalDebouncersRef = useRef<Record<string, number>>({})
-  const mobileWeekPickerRef = useRef<HTMLInputElement | null>(null)
-  const clockPickHabitIdRef = useRef<string | null>(null)
-  const clockPickModeRef = useRef<'postpone' | 'deadline' | null>(null)
+  const [calendarTarget, setCalendarTarget] = useState<CalendarTarget | null>(null)
+  const [calendarY, setCalendarY] = useState(now.getFullYear())
+  const [calendarM0, setCalendarM0] = useState(now.getMonth())
 
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768)
@@ -367,6 +300,10 @@ export default function App() {
   useEffect(() => {
     if (!isMobile) setMobileTrackerTab('marks')
   }, [isMobile])
+
+  useEffect(() => {
+    if (screen !== 'tracker') setMobileMarksView('week')
+  }, [screen])
 
   useEffect(() => {
     if (!supabase) return
@@ -464,10 +401,8 @@ export default function App() {
   )
 
   const applyClockDate = useCallback(
-    (value: string) => {
-      const id = clockPickHabitIdRef.current
-      const mode = clockPickModeRef.current
-      if (!value || !id || !mode) return
+    (value: string, id: string, mode: 'postpone' | 'deadline') => {
+      if (!value || !id) return
       const h = habitsRef.current.find((x) => x.id === id)
       if (!h) return
       if (mode === 'postpone') {
@@ -480,10 +415,6 @@ export default function App() {
           postponedUntil: null,
         })
       }
-      clockPickHabitIdRef.current = null
-      clockPickModeRef.current = null
-      setClockMenuHabitId(null)
-      setMoreMenuHabitId(null)
     },
     [dispatch],
   )
@@ -567,7 +498,7 @@ export default function App() {
   const weekdayRu = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб']
   const todayKey = dateKey(today.getFullYear(), today.getMonth(), today.getDate())
   const dayColumns = useMemo(() => {
-    if (!isMobile) {
+    if (!isMobile || mobileMarksView === 'month') {
       return Array.from({ length: dim }, (_, i) => {
         const d = new Date(y, m0, i + 1)
         const key = dateKey(d.getFullYear(), d.getMonth(), d.getDate())
@@ -595,9 +526,9 @@ export default function App() {
         isToday: key === todayKey,
       } satisfies DayColumn
     })
-  }, [isMobile, dim, selectedD, todayD, y, m0, todayKey])
+  }, [isMobile, mobileMarksView, dim, selectedD, todayD, y, m0, todayKey])
   const mobileWeekRangeLabel = useMemo(() => {
-    if (!isMobile || dayColumns.length === 0) return ''
+    if (!isMobile || mobileMarksView === 'month' || dayColumns.length === 0) return ''
     const first = dayColumns[0]
     const last = dayColumns[dayColumns.length - 1]
     if (!first || !last) return ''
@@ -628,8 +559,25 @@ export default function App() {
       month: 'long',
     })
     return `${ru.format(fDate)} — ${ru.format(lDate)}`
-  }, [isMobile, dayColumns])
-  const selectedDateValue = `${y}-${String(m0 + 1).padStart(2, '0')}-${String(
+  }, [isMobile, mobileMarksView, dayColumns])
+  const mobileMonthLabel = useMemo(
+    () =>
+      new Intl.DateTimeFormat('ru-RU', {
+        month: 'long',
+        year: 'numeric',
+      }).format(new Date(y, m0, 1)),
+    [y, m0],
+  )
+  const mobileMonthCells = useMemo(() => {
+    const first = new Date(y, m0, 1)
+    const pad = weekdayMon0(first)
+    const cells: (number | null)[] = []
+    for (let i = 0; i < pad; i++) cells.push(null)
+    for (let d = 1; d <= dim; d++) cells.push(d)
+    while (cells.length % 7 !== 0) cells.push(null)
+    return cells
+  }, [y, m0, dim])
+  const selectedDateKey = `${y}-${String(m0 + 1).padStart(2, '0')}-${String(
     Math.max(1, Math.min(dim, selectedD ?? todayD)),
   ).padStart(2, '0')}`
 
@@ -657,6 +605,72 @@ export default function App() {
     setM0(parsed.getMonth())
     setSelectedD(parsed.getDate())
   }
+
+  const openCalendar = useCallback((target: CalendarTarget, initial?: string) => {
+    const fallback = new Date()
+    const base = initial ? new Date(`${initial}T00:00:00`) : fallback
+    const safe = Number.isNaN(base.getTime()) ? fallback : base
+    setCalendarY(safe.getFullYear())
+    setCalendarM0(safe.getMonth())
+    setClockMenuHabitId(null)
+    setMoreMenuHabitId(null)
+    setCalendarTarget(target)
+  }, [])
+
+  const openClockCalendar = useCallback(
+    (habitId: string, mode: 'postpone' | 'deadline') => {
+      const h = habitsRef.current.find((x) => x.id === habitId)
+      const fallback = dateKey(y, m0, selectedD ?? todayD)
+      const initial =
+        mode === 'postpone' ? (h?.postponedUntil ?? fallback) : (h?.deadline ?? fallback)
+      openCalendar({ kind: 'clock', habitId, mode }, initial)
+    },
+    [openCalendar, y, m0, selectedD, todayD],
+  )
+
+  const applyCalendarPick = useCallback(
+    (value: string) => {
+      const t = calendarTarget
+      if (!t) return
+      if (t.kind === 'mobileWeek') {
+        selectDate(value)
+      } else {
+        applyClockDate(value, t.habitId, t.mode)
+      }
+      setCalendarTarget(null)
+      setClockMenuHabitId(null)
+      setMoreMenuHabitId(null)
+    },
+    [calendarTarget, applyClockDate],
+  )
+
+  const calendarMonthDays = useMemo(() => {
+    const first = new Date(calendarY, calendarM0, 1)
+    const pad = weekdayMon0(first)
+    const dimInMonth = daysInMonth(calendarY, calendarM0)
+    const cells: (number | null)[] = []
+    for (let i = 0; i < pad; i++) cells.push(null)
+    for (let d = 1; d <= dimInMonth; d++) cells.push(d)
+    while (cells.length % 7 !== 0) cells.push(null)
+    return cells
+  }, [calendarY, calendarM0])
+
+  const calendarSelectedKey = useMemo(() => {
+    if (!calendarTarget) return null
+    if (calendarTarget.kind === 'mobileWeek') return selectedDateKey
+    const h = habits.find((x) => x.id === calendarTarget.habitId)
+    if (!h) return null
+    return calendarTarget.mode === 'postpone' ? (h.postponedUntil ?? null) : (h.deadline ?? null)
+  }, [calendarTarget, selectedDateKey, habits])
+
+  const calendarMonthLabel = useMemo(
+    () =>
+      new Intl.DateTimeFormat('ru-RU', {
+        month: 'long',
+        year: 'numeric',
+      }).format(new Date(calendarY, calendarM0, 1)),
+    [calendarY, calendarM0],
+  )
 
   const profileName =
     (session?.user?.user_metadata?.display_name as string | undefined)?.trim() ||
@@ -698,24 +712,7 @@ export default function App() {
   }
 
   const removeHabit = (id: string) => {
-    setEditingHabitId((e) => (e === id ? null : e))
     dispatch('habit_delete', { id })
-  }
-
-  const cancelEditHabitName = () => {
-    setEditingHabitId(null)
-    setEditingName('')
-  }
-
-  const commitEditHabitName = () => {
-    if (!editingHabitId) return
-    const id = editingHabitId
-    const t = editingName.trim()
-    setEditingHabitId(null)
-    setEditingName('')
-    if (!t) return
-    const habit = habitsRef.current.find((x) => x.id === id)
-    if (habit) dispatch('habit_upsert', { ...habit, name: t })
   }
 
   const posHabits = useMemo(
@@ -774,6 +771,14 @@ export default function App() {
     const neg = visible.filter((h) => h.negative)
     return [...pos, ...neg]
   }, [habits, todayKey])
+
+  const trackerStatsKind = useMemo(() => {
+    const list = trackerOrderedHabits
+    if (list.length === 0) return 'pos' as const
+    if (list.every((h) => h.negative)) return 'neg' as const
+    if (list.every((h) => !h.negative)) return 'pos' as const
+    return 'mix' as const
+  }, [trackerOrderedHabits])
 
   const habitsEditorSections = useMemo(() => {
     const active = habits.filter((h) => !habitInactiveInList(h, todayKey))
@@ -936,37 +941,33 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => moveMobileWeek(-1)}
+                  onClick={() => {
+                    if (mobileMarksView === 'month') setMonthDelta(-1)
+                    else moveMobileWeek(-1)
+                  }}
                   className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-neutral-800 shadow-sm ring-1 ring-black/5"
-                  aria-label="Предыдущая неделя"
+                  aria-label={mobileMarksView === 'month' ? 'Предыдущий месяц' : 'Предыдущая неделя'}
                 >
                   <ChevronLeft className="h-5 w-5" />
                 </button>
                 <div className="relative min-w-0 flex-1">
-                  <input
-                    ref={mobileWeekPickerRef}
-                    type="date"
-                    value={selectedDateValue}
-                    onChange={(e) => selectDate(e.target.value)}
-                    tabIndex={-1}
-                    className="pointer-events-none fixed left-0 top-0 -z-10 h-px w-px opacity-0"
-                    style={{ fontSize: 16 }}
-                    aria-hidden
-                  />
                   <button
                     type="button"
-                    onClick={() => openNativeDateInput(mobileWeekPickerRef.current)}
+                    onClick={() => openCalendar({ kind: 'mobileWeek' }, selectedDateKey)}
                     className="flex min-h-[2.75rem] w-full touch-manipulation items-center justify-center rounded-2xl bg-white px-3 py-2.5 text-center text-base font-semibold leading-tight text-neutral-900 shadow-sm ring-1 ring-black/5 active:bg-neutral-50"
-                    aria-label="Выбрать дату недели"
+                    aria-label={mobileMarksView === 'month' ? 'Выбрать дату месяца' : 'Выбрать дату недели'}
                   >
-                    {mobileWeekRangeLabel}
+                    {mobileMarksView === 'month' ? mobileMonthLabel : mobileWeekRangeLabel}
                   </button>
                 </div>
                 <button
                   type="button"
-                  onClick={() => moveMobileWeek(1)}
+                  onClick={() => {
+                    if (mobileMarksView === 'month') setMonthDelta(1)
+                    else moveMobileWeek(1)
+                  }}
                   className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-neutral-800 shadow-sm ring-1 ring-black/5"
-                  aria-label="Следующая неделя"
+                  aria-label={mobileMarksView === 'month' ? 'Следующий месяц' : 'Следующая неделя'}
                 >
                   <ChevronRight className="h-5 w-5" />
                 </button>
@@ -1251,26 +1252,20 @@ export default function App() {
                   </button>
                   {clockMenuHabitId === h.id && (
                     <div className="absolute bottom-full right-0 z-40 mb-1 min-w-[12rem] rounded-lg border border-teal-200 bg-white py-1 shadow-lg">
-                      <ClockMenuDateRow
-                        habitId={h.id}
-                        mode="postpone"
-                        label="Отложить до"
-                        rowClassName="rounded-md hover:bg-teal-50"
-                        textClassName="text-teal-900"
-                        pickHabitIdRef={clockPickHabitIdRef}
-                        pickModeRef={clockPickModeRef}
-                        onPick={applyClockDate}
-                      />
-                      <ClockMenuDateRow
-                        habitId={h.id}
-                        mode="deadline"
-                        label="Соблюдать до"
-                        rowClassName="rounded-md hover:bg-teal-50"
-                        textClassName="text-teal-900"
-                        pickHabitIdRef={clockPickHabitIdRef}
-                        pickModeRef={clockPickModeRef}
-                        onPick={applyClockDate}
-                      />
+                      <button
+                        type="button"
+                        className="block w-full px-3 py-2 text-left text-sm text-teal-900 hover:bg-teal-50"
+                        onClick={() => openClockCalendar(h.id, 'postpone')}
+                      >
+                        Отложить до
+                      </button>
+                      <button
+                        type="button"
+                        className="block w-full px-3 py-2 text-left text-sm text-teal-900 hover:bg-teal-50"
+                        onClick={() => openClockCalendar(h.id, 'deadline')}
+                      >
+                        Соблюдать до
+                      </button>
                     </div>
                   )}
                   {moreMenuHabitId === h.id && (
@@ -1648,158 +1643,88 @@ export default function App() {
                         className="rounded-2xl border border-neutral-200/70 bg-white px-4 py-3 shadow-sm"
                       >
                         <div className="mb-3 flex items-start justify-between gap-2">
-                          <div className="flex min-w-0 flex-1 items-center gap-2">
+                          <div className="flex min-w-0 flex-1 items-start gap-2">
                             <span className="text-2xl leading-none">{h.emoji}</span>
                             <div className="min-w-0">
-                              {editingHabitId === h.id ? (
-                                <input
-                                  type="text"
-                                  value={editingName}
-                                  onChange={(e) => setEditingName(e.target.value)}
-                                  className="w-full rounded-lg border border-neutral-300 bg-white px-2 py-1 text-sm font-semibold text-neutral-900 outline-none ring-1 ring-neutral-200"
-                                  autoFocus
-                                  onFocus={(e) => e.target.select()}
-                                  onBlur={commitEditHabitName}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                      e.preventDefault()
-                                      commitEditHabitName()
-                                    }
-                                    if (e.key === 'Escape') {
-                                      e.preventDefault()
-                                      cancelEditHabitName()
-                                    }
-                                  }}
-                                  onClick={(ev) => ev.stopPropagation()}
-                                />
-                              ) : (
-                                <p
-                                  className="cursor-text truncate text-base font-semibold text-neutral-900"
-                                  onDoubleClick={(ev) => {
-                                    ev.preventDefault()
-                                    setEditingHabitId(h.id)
-                                    setEditingName(h.name)
-                                  }}
-                                >
-                                  {h.name}
+                              <p className="truncate text-base font-semibold text-neutral-900">
+                                {h.name}
+                              </p>
+                              {h.deadline ? (
+                                <p className="mt-0.5 text-xs leading-snug text-neutral-500">
+                                  Соблюдать до{' '}
+                                  {(() => {
+                                    const { y: yy, m0: mm, d: dd } = parseKey(
+                                      h.deadline,
+                                    )
+                                    return `${pad2(dd)}.${pad2(mm + 1)}.${yy}`
+                                  })()}
                                 </p>
-                              )}
+                              ) : null}
                             </div>
                           </div>
-                          <div className="flex shrink-0 flex-col items-end gap-1">
-                            <span className="text-xs text-neutral-500">
-                              {goalLabel}
-                            </span>
-                            <div
-                              className="relative flex items-center gap-0.5"
-                              data-habit-menu-root
-                            >
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setClockMenuHabitId((id) =>
-                                    id === h.id ? null : h.id,
-                                  )
-                                  setMoreMenuHabitId(null)
-                                }}
-                                className="rounded-lg p-1.5 text-neutral-500 hover:bg-neutral-100 hover:text-teal-700"
-                                aria-label="Срок"
-                              >
-                                <Clock className="h-4 w-4" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setMoreMenuHabitId((id) =>
-                                    id === h.id ? null : h.id,
-                                  )
-                                  setClockMenuHabitId(null)
-                                }}
-                                className="rounded-lg p-1.5 text-neutral-500 hover:bg-neutral-100 hover:text-teal-700"
-                                aria-label="Ещё"
-                              >
-                                <MoreVertical className="h-4 w-4" />
-                              </button>
-                              {clockMenuHabitId === h.id && (
-                                <div className="absolute right-0 top-full z-40 mt-1 min-w-[12rem] rounded-lg border border-neutral-200 bg-white py-1 shadow-lg">
-                                  <ClockMenuDateRow
-                                    habitId={h.id}
-                                    mode="postpone"
-                                    label="Отложить до"
-                                    rowClassName="rounded-md hover:bg-neutral-50"
-                                    textClassName="text-neutral-800"
-                                    pickHabitIdRef={clockPickHabitIdRef}
-                                    pickModeRef={clockPickModeRef}
-                                    onPick={applyClockDate}
-                                  />
-                                  <ClockMenuDateRow
-                                    habitId={h.id}
-                                    mode="deadline"
-                                    label="Соблюдать до"
-                                    rowClassName="rounded-md hover:bg-neutral-50"
-                                    textClassName="text-neutral-800"
-                                    pickHabitIdRef={clockPickHabitIdRef}
-                                    pickModeRef={clockPickModeRef}
-                                    onPick={applyClockDate}
+                          <span className="shrink-0 text-xs text-neutral-500">
+                            {goalLabel}
+                          </span>
+                        </div>
+                        {mobileMarksView === 'week' ? (
+                          <div className="flex justify-between gap-1">
+                            {dayColumns.map((col) => {
+                              const key = col.key
+                              const raw = completions[h.id]?.[key]
+                              return (
+                                <div
+                                  key={key}
+                                  className="flex min-w-0 flex-1 flex-col items-center gap-1.5"
+                                >
+                                  <span className="text-[10px] font-medium text-neutral-400">
+                                    {col.weekday}
+                                  </span>
+                                  <WeekDot
+                                    habit={h}
+                                    raw={raw}
+                                    onToggle={() => toggleDay(h.id, key)}
                                   />
                                 </div>
-                              )}
-                              {moreMenuHabitId === h.id && (
-                                <div className="absolute right-8 top-full z-40 mt-1 min-w-[10rem] rounded-lg border border-neutral-200 bg-white py-1 shadow-lg">
+                              )
+                            })}
+                          </div>
+                        ) : (
+                          <div className="space-y-1.5">
+                            <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-medium text-neutral-400">
+                              {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((wd) => (
+                                <span key={wd}>{wd}</span>
+                              ))}
+                            </div>
+                            <div className="grid grid-cols-7 gap-1">
+                              {mobileMonthCells.map((d, idx) => {
+                                if (d == null) return <div key={`empty-${h.id}-${idx}`} className="h-10" />
+                                const key = dateKey(y, m0, d)
+                                const raw = completions[h.id]?.[key]
+                                const marked = raw === true
+                                const cellCls = h.negative
+                                  ? marked
+                                    ? 'border-rose-300 bg-rose-100 text-rose-800'
+                                    : 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                                  : marked
+                                    ? 'border-emerald-600 bg-emerald-500 text-white'
+                                    : 'border-slate-200 bg-white text-neutral-700'
+                                return (
                                   <button
+                                    key={`${h.id}-${key}`}
                                     type="button"
-                                    className="block w-full px-3 py-2 text-left text-sm text-rose-700 hover:bg-rose-50"
-                                    onClick={() => {
-                                      setMoreMenuHabitId(null)
-                                      setDeleteConfirmId(h.id)
-                                    }}
+                                    onClick={() => toggleDay(h.id, key)}
+                                    className={`flex h-10 flex-col items-center justify-center rounded-lg border text-[10px] font-semibold ${cellCls} ${key === todayKey ? 'ring-2 ring-teal-200' : ''}`}
                                   >
-                                    Удалить
+                                    <span className="leading-none">{d}</span>
+                                    <span className="mt-0.5 leading-none">
+                                      {!h.negative && marked ? '✓' : h.negative && marked ? '✕' : h.negative ? '·' : ''}
+                                    </span>
                                   </button>
-                                  <button
-                                    type="button"
-                                    className="block w-full px-3 py-2 text-left text-sm text-neutral-800 hover:bg-neutral-50"
-                                    onClick={() => {
-                                      const habit = habitsRef.current.find(
-                                        (x) => x.id === h.id,
-                                      )
-                                      if (habit)
-                                        dispatch('habit_upsert', {
-                                          ...habit,
-                                          archived: true,
-                                          postponedUntil: null,
-                                        })
-                                      setMoreMenuHabitId(null)
-                                    }}
-                                  >
-                                    В архив
-                                  </button>
-                                </div>
-                              )}
+                                )
+                              })}
                             </div>
                           </div>
-                        </div>
-                        <div className="flex justify-between gap-1">
-                          {dayColumns.map((col) => {
-                            const key = col.key
-                            const raw = completions[h.id]?.[key]
-                            return (
-                              <div
-                                key={key}
-                                className="flex min-w-0 flex-1 flex-col items-center gap-1.5"
-                              >
-                                <span className="text-[10px] font-medium text-neutral-400">
-                                  {col.weekday}
-                                </span>
-                                <WeekDot
-                                  habit={h}
-                                  raw={raw}
-                                  onToggle={() => toggleDay(h.id, key)}
-                                />
-                              </div>
-                            )
-                          })}
-                        </div>
+                        )}
                       </div>
                     )
                   })}
@@ -1856,142 +1781,28 @@ export default function App() {
                           h.negative ? 'text-rose-950' : 'text-teal-950'
                         } ${rowStyle(h)} border-r-teal-100/80 shadow-[4px_0_8px_-2px_rgba(15,118,110,0.12)]`}
                       >
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex min-w-0 flex-1 items-center gap-1">
+                        <div className="flex min-w-0 flex-col gap-0.5">
+                          <div className="flex min-w-0 items-center gap-1">
                             <span className="shrink-0 select-none">{h.emoji}</span>
-                            {editingHabitId === h.id ? (
-                              <input
-                                type="text"
-                                value={editingName}
-                                onChange={(e) => setEditingName(e.target.value)}
-                                className={`min-w-0 flex-1 rounded border border-teal-400 bg-white px-1 py-0.5 text-xs outline-none ring-1 ring-teal-300 sm:text-sm ${
-                                  h.negative
-                                    ? 'text-rose-950'
-                                    : 'text-teal-950'
-                                }`}
-                                autoFocus
-                                onFocus={(e) => e.target.select()}
-                                onBlur={commitEditHabitName}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') {
-                                    e.preventDefault()
-                                    commitEditHabitName()
-                                  }
-                                  if (e.key === 'Escape') {
-                                    e.preventDefault()
-                                    cancelEditHabitName()
-                                  }
-                                }}
-                                onClick={(ev) => ev.stopPropagation()}
-                              />
-                            ) : (
-                              <span
-                                className="min-w-0 flex-1 cursor-text truncate"
-                                onDoubleClick={(ev) => {
-                                  ev.preventDefault()
-                                  setEditingHabitId(h.id)
-                                  setEditingName(h.name)
-                                }}
-                              >
-                                {h.name}
-                              </span>
-                            )}
-                          </div>
-                          <div
-                            className="relative flex shrink-0 items-center gap-0"
-                            data-habit-menu-root
-                          >
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setClockMenuHabitId((id) =>
-                                  id === h.id ? null : h.id,
-                                )
-                                setMoreMenuHabitId(null)
-                              }}
-                              className={`rounded p-1 ${
-                                h.negative
-                                  ? 'text-rose-600 hover:bg-rose-100'
-                                  : 'text-teal-600 hover:bg-teal-100'
+                            <span
+                              className={`min-w-0 truncate text-xs font-medium sm:text-sm ${
+                                h.negative ? 'text-rose-950' : 'text-teal-950'
                               }`}
-                              aria-label="Срок"
                             >
-                              <Clock className="h-4 w-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setMoreMenuHabitId((id) =>
-                                  id === h.id ? null : h.id,
-                                )
-                                setClockMenuHabitId(null)
-                              }}
-                              className={`rounded p-1 ${
-                                h.negative
-                                  ? 'text-rose-600 hover:bg-rose-100'
-                                  : 'text-teal-600 hover:bg-teal-100'
-                              }`}
-                              aria-label="Ещё"
-                            >
-                              <MoreVertical className="h-4 w-4" />
-                            </button>
-                            {clockMenuHabitId === h.id && (
-                              <div className="absolute bottom-full right-0 z-50 mb-1 min-w-[12rem] rounded-lg border border-teal-200 bg-white py-1 shadow-lg">
-                                <ClockMenuDateRow
-                                  habitId={h.id}
-                                  mode="postpone"
-                                  label="Отложить до"
-                                  rowClassName="rounded-md hover:bg-teal-50"
-                                  textClassName="text-teal-900"
-                                  pickHabitIdRef={clockPickHabitIdRef}
-                                  pickModeRef={clockPickModeRef}
-                                  onPick={applyClockDate}
-                                />
-                                <ClockMenuDateRow
-                                  habitId={h.id}
-                                  mode="deadline"
-                                  label="Соблюдать до"
-                                  rowClassName="rounded-md hover:bg-teal-50"
-                                  textClassName="text-teal-900"
-                                  pickHabitIdRef={clockPickHabitIdRef}
-                                  pickModeRef={clockPickModeRef}
-                                  onPick={applyClockDate}
-                                />
-                              </div>
-                            )}
-                            {moreMenuHabitId === h.id && (
-                              <div className="absolute bottom-full right-6 z-50 mb-1 min-w-[10rem] rounded-lg border border-teal-200 bg-white py-1 shadow-lg">
-                                <button
-                                  type="button"
-                                  className="block w-full px-3 py-2 text-left text-sm text-rose-700 hover:bg-rose-50"
-                                  onClick={() => {
-                                    setMoreMenuHabitId(null)
-                                    setDeleteConfirmId(h.id)
-                                  }}
-                                >
-                                  Удалить
-                                </button>
-                                <button
-                                  type="button"
-                                  className="block w-full px-3 py-2 text-left text-sm text-teal-900 hover:bg-teal-50"
-                                  onClick={() => {
-                                    const habit = habitsRef.current.find(
-                                      (x) => x.id === h.id,
-                                    )
-                                    if (habit)
-                                      dispatch('habit_upsert', {
-                                        ...habit,
-                                        archived: true,
-                                        postponedUntil: null,
-                                      })
-                                    setMoreMenuHabitId(null)
-                                  }}
-                                >
-                                  В архив
-                                </button>
-                              </div>
-                            )}
+                              {h.name}
+                            </span>
                           </div>
+                          {h.deadline ? (
+                            <span className="block pl-5 text-[9px] leading-tight text-neutral-500 sm:text-[10px]">
+                              Соблюдать до{' '}
+                              {(() => {
+                                const { y: yy, m0: mm, d: dd } = parseKey(
+                                  h.deadline,
+                                )
+                                return `${pad2(dd)}.${pad2(mm + 1)}.${yy}`
+                              })()}
+                            </span>
+                          ) : null}
                         </div>
                       </td>
                       {dayColumns.map(
@@ -2082,39 +1893,57 @@ export default function App() {
                             </div>
                             <div className="mb-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs text-teal-900">
                               <div className="flex items-center justify-between gap-2 rounded-lg bg-teal-50/80 px-2 py-1.5">
-                                <span className="text-teal-600">Цель</span>
+                                <span className="text-teal-600">
+                                  {h.negative ? 'Лимит' : 'Цель'}
+                                </span>
                                 <span className="font-semibold tabular-nums">
                                   {goal}
                                 </span>
                               </div>
                               <div className="flex items-center justify-between gap-2 rounded-lg bg-teal-50/80 px-2 py-1.5">
-                                <span className="text-teal-600">Прогресс</span>
+                                <span className="text-teal-600">
+                                  {h.negative ? 'Запас' : 'Прогресс'}
+                                </span>
                                 <span className="font-semibold tabular-nums">
                                   {pct}%
                                 </span>
                               </div>
                               <div className="flex items-center justify-between gap-2 rounded-lg bg-teal-50/80 px-2 py-1.5">
-                                <span className="text-teal-600">Всего</span>
+                                <span className="text-teal-600">
+                                  {h.negative ? 'Срывов' : 'Всего'}
+                                </span>
                                 <span className="font-semibold tabular-nums">
                                   {done}
                                 </span>
                               </div>
                               <div className="flex items-center justify-between gap-2 rounded-lg bg-teal-50/80 px-2 py-1.5">
-                                <span className="text-teal-600">Серия</span>
+                                <span className="text-teal-600">
+                                  {h.negative ? 'Подряд без срыва' : 'Серия'}
+                                </span>
                                 <span className="font-semibold tabular-nums">
                                   {cur}
                                 </span>
                               </div>
                               <div className="col-span-2 flex items-center justify-between gap-2 rounded-lg bg-teal-50/80 px-2 py-1.5">
-                                <span className="text-teal-600">Рекорд</span>
+                                <span className="text-teal-600">
+                                  {h.negative ? 'Рекорд чистых дней' : 'Рекорд'}
+                                </span>
                                 <span className="font-semibold tabular-nums">
                                   {lon}
                                 </span>
                               </div>
                             </div>
-                            <div className="h-2 w-full overflow-hidden rounded-full bg-emerald-100 ring-1 ring-emerald-200/60">
+                            <div
+                              className={`h-2 w-full overflow-hidden rounded-full ring-1 ${
+                                h.negative
+                                  ? 'bg-rose-100 ring-rose-200/60'
+                                  : 'bg-emerald-100 ring-emerald-200/60'
+                              }`}
+                            >
                               <div
-                                className="h-full rounded-full bg-emerald-500 transition-all"
+                                className={`h-full rounded-full transition-all ${
+                                  h.negative ? 'bg-rose-500' : 'bg-emerald-500'
+                                }`}
                                 style={{
                                   width: `${bar}%`,
                                   minWidth: bar > 0 ? '2px' : undefined,
@@ -2130,25 +1959,55 @@ export default function App() {
                       <div className="grid grid-cols-5 gap-x-0.5 border-b border-teal-200 bg-teal-100 px-1.5 py-2 text-[9px] font-semibold uppercase leading-tight tracking-wide text-teal-900 sm:gap-x-1 sm:px-2 sm:text-[10px]">
                         <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
                           <Target className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                          <span className="whitespace-nowrap">Цель</span>
+                          <span className="whitespace-nowrap">
+                            {trackerStatsKind === 'neg'
+                              ? 'Лимит'
+                              : trackerStatsKind === 'mix'
+                                ? 'План'
+                                : 'Цель'}
+                          </span>
                         </div>
                         <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
                           <BarChart3 className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                          <span className="whitespace-nowrap">Прогресс</span>
+                          <span className="whitespace-nowrap">
+                            {trackerStatsKind === 'neg'
+                              ? 'Запас'
+                              : trackerStatsKind === 'mix'
+                                ? 'Доля'
+                                : 'Прогресс'}
+                          </span>
                         </div>
                         <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
                           <span className="text-xs leading-none" aria-hidden>
                             Σ
                           </span>
-                          <span className="whitespace-nowrap">Всего</span>
+                          <span className="whitespace-nowrap">
+                            {trackerStatsKind === 'neg'
+                              ? 'Срывов'
+                              : trackerStatsKind === 'mix'
+                                ? 'Факт'
+                                : 'Всего'}
+                          </span>
                         </div>
                         <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
                           <Flame className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                          <span className="whitespace-nowrap">Серия</span>
+                          <span className="whitespace-nowrap">
+                            {trackerStatsKind === 'neg'
+                              ? 'Подряд'
+                              : trackerStatsKind === 'mix'
+                                ? 'Серия'
+                                : 'Серия'}
+                          </span>
                         </div>
                         <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
                           <Trophy className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                          <span className="whitespace-nowrap">Рекорд</span>
+                          <span className="whitespace-nowrap">
+                            {trackerStatsKind === 'neg'
+                              ? 'Рекорд'
+                              : trackerStatsKind === 'mix'
+                                ? 'Рекорд'
+                                : 'Рекорд'}
+                          </span>
                         </div>
                       </div>
                       <div className="divide-y divide-teal-200">
@@ -2196,9 +2055,17 @@ export default function App() {
                                   {lon}
                                 </div>
                               </div>
-                              <div className="h-2 w-full shrink-0 overflow-hidden rounded-full bg-emerald-100 ring-1 ring-emerald-200/60">
+                              <div
+                                className={`h-2 w-full shrink-0 overflow-hidden rounded-full ring-1 ${
+                                  h.negative
+                                    ? 'bg-rose-100 ring-rose-200/60'
+                                    : 'bg-emerald-100 ring-emerald-200/60'
+                                }`}
+                              >
                                 <div
-                                  className="h-full rounded-full bg-emerald-500 transition-all"
+                                  className={`h-full rounded-full transition-all ${
+                                    h.negative ? 'bg-rose-500' : 'bg-emerald-500'
+                                  }`}
                                   style={{
                                     width: `${bar}%`,
                                     minWidth: bar > 0 ? '2px' : undefined,
@@ -2260,6 +2127,30 @@ export default function App() {
               >
                 Выйти
               </button>
+            </div>
+          )}
+          {screen === 'tracker' && mobileTrackerTab === 'marks' && (
+            <div className="fixed bottom-[calc(5.2rem+env(safe-area-inset-bottom))] left-3 z-[105]">
+              <div className="inline-flex rounded-xl border border-teal-200 bg-white p-0.5 shadow-sm">
+                <button
+                  type="button"
+                  onClick={() => setMobileMarksView('week')}
+                  className={`rounded-lg px-3 py-1 text-xs font-semibold ${
+                    mobileMarksView === 'week' ? 'bg-teal-600 text-white' : 'text-teal-800'
+                  }`}
+                >
+                  Неделя
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMobileMarksView('month')}
+                  className={`rounded-lg px-3 py-1 text-xs font-semibold ${
+                    mobileMarksView === 'month' ? 'bg-teal-600 text-white' : 'text-teal-800'
+                  }`}
+                >
+                  Месяц
+                </button>
+              </div>
             </div>
           )}
           <nav
@@ -2576,6 +2467,95 @@ export default function App() {
                 className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-medium text-white shadow hover:bg-teal-800"
               >
                 Сохранить
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {calendarTarget && (
+        <div
+          className="fixed inset-0 z-[124] flex items-end justify-center bg-black/40 p-3 sm:items-center sm:p-4"
+          onClick={() => setCalendarTarget(null)}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl border border-teal-200 bg-white p-4 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => {
+                  const d = new Date(calendarY, calendarM0 - 1, 1)
+                  setCalendarY(d.getFullYear())
+                  setCalendarM0(d.getMonth())
+                }}
+                className="rounded-lg p-2 text-teal-700 hover:bg-teal-50"
+                aria-label="Предыдущий месяц"
+              >
+                <ChevronLeft className="h-5 w-5" />
+              </button>
+              <div className="text-sm font-semibold capitalize text-teal-900">
+                {calendarMonthLabel}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const d = new Date(calendarY, calendarM0 + 1, 1)
+                  setCalendarY(d.getFullYear())
+                  setCalendarM0(d.getMonth())
+                }}
+                className="rounded-lg p-2 text-teal-700 hover:bg-teal-50"
+                aria-label="Следующий месяц"
+              >
+                <ChevronRight className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="mb-2 grid grid-cols-7 gap-1 text-center text-[11px] font-medium text-neutral-500">
+              {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((w) => (
+                <div key={w} className="py-1">
+                  {w}
+                </div>
+              ))}
+            </div>
+            <div className="grid grid-cols-7 gap-1">
+              {calendarMonthDays.map((d, i) => {
+                if (d == null) return <div key={`empty-${i}`} className="h-10" />
+                const key = dateKey(calendarY, calendarM0, d)
+                const isSel = key === calendarSelectedKey
+                const isNow = key === todayKey
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => applyCalendarPick(key)}
+                    className={`h-10 rounded-lg text-sm font-medium ${
+                      isSel
+                        ? 'bg-teal-600 text-white'
+                        : isNow
+                          ? 'bg-teal-100 text-teal-900'
+                          : 'text-neutral-800 hover:bg-neutral-100'
+                    }`}
+                  >
+                    {d}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => applyCalendarPick(todayKey)}
+                className="rounded-lg px-3 py-1.5 text-sm font-medium text-teal-800 hover:bg-teal-50"
+              >
+                Сегодня
+              </button>
+              <button
+                type="button"
+                onClick={() => setCalendarTarget(null)}
+                className="rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-100"
+              >
+                Отмена
               </button>
             </div>
           </div>
