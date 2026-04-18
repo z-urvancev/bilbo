@@ -84,6 +84,27 @@ function errText(e: unknown): string {
   return 'Ошибка запроса'
 }
 
+const EMAIL_MAX_TOTAL = 320
+const EMAIL_MAX_LOCAL = 64
+const EMAIL_MAX_DOMAIN = 255
+
+function emailLengthError(email: string): string | null {
+  if (email.length > EMAIL_MAX_TOTAL) {
+    return 'Адрес почты не длиннее 320 символов.'
+  }
+  const at = email.indexOf('@')
+  if (at === -1) return null
+  const local = email.slice(0, at)
+  const domain = email.slice(at + 1)
+  if (local.length > EMAIL_MAX_LOCAL) {
+    return 'Часть до «@» — не более 64 символов.'
+  }
+  if (domain.length > EMAIL_MAX_DOMAIN) {
+    return 'Часть после «@» — не более 255 символов.'
+  }
+  return null
+}
+
 function friendlyAuthError(e: unknown): string {
   const msg = errText(e)
   const low = msg.toLowerCase()
@@ -105,8 +126,13 @@ function friendlyAuthError(e: unknown): string {
   if (low.includes('network') || low.includes('failed to fetch')) {
     return 'Проблема с сетью. Проверьте интернет и повторите.'
   }
-  if (low.includes('password should')) {
-    return 'Пароль слишком простой. Добавьте заглавные/строчные буквы и цифры.'
+  if (
+    low.includes('password should') ||
+    low.includes('password does not meet') ||
+    low.includes('password is too weak') ||
+    low.includes('weak password')
+  ) {
+    return 'Пароль: от 8 до 50 символов.'
   }
   if (low.includes('user already registered') || low.includes('already been registered')) {
     return 'Пользователь с такой почтой уже зарегистрирован. Попробуйте войти.'
@@ -321,6 +347,7 @@ export default function App() {
   const pendingRef = useRef<PendingOutgoing[]>([])
   const flushTimerRef = useRef<number | undefined>(undefined)
   const goalDebouncersRef = useRef<Record<string, number>>({})
+  const authMenuRootRef = useRef<HTMLDivElement | null>(null)
   const [calendarTarget, setCalendarTarget] = useState<CalendarTarget | null>(null)
   const [calendarY, setCalendarY] = useState(now.getFullYear())
   const [calendarM0, setCalendarM0] = useState(now.getMonth())
@@ -364,6 +391,18 @@ export default function App() {
   useEffect(() => {
     setAuthMenuOpen(false)
   }, [screen, mobileTrackerTab])
+
+  useEffect(() => {
+    if (!authMenuOpen || !session?.user || isMobile) return
+    const onDoc = (ev: MouseEvent) => {
+      const t = ev.target
+      if (!(t instanceof Node)) return
+      if (authMenuRootRef.current?.contains(t)) return
+      setAuthMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [authMenuOpen, session?.user, isMobile])
 
   useEffect(() => {
     if (emojiPickerForId == null) return
@@ -867,6 +906,11 @@ export default function App() {
       setAuthErr('Укажите почту')
       return
     }
+    const emailLenErr = emailLengthError(email)
+    if (emailLenErr) {
+      setAuthErr(emailLenErr)
+      return
+    }
     if (authMode === 'login') {
       const { error } = await supabase.auth.signInWithPassword({
         email,
@@ -876,8 +920,8 @@ export default function App() {
       else setAuthModalOpen(false)
       return
     }
-    if (authPassword.length < 6) {
-      setAuthErr('Пароль не короче 6 символов')
+    if (authPassword.length < 8 || authPassword.length > 50) {
+      setAuthErr('Пароль: от 8 до 50 символов')
       return
     }
     if (authPassword !== authPassword2) {
@@ -926,7 +970,7 @@ export default function App() {
       )
     }
     return (
-      <div className="relative">
+      <div className="relative" ref={authMenuRootRef}>
         <button
           type="button"
           onClick={(e) => {
@@ -1557,20 +1601,24 @@ export default function App() {
                 </button>
               ))}
             </div>
-            <div className="flex items-stretch gap-1.5 sm:gap-2">
+            <div className="flex h-[9.25rem] items-stretch gap-1.5 sm:h-[10.25rem] sm:gap-2">
               <div
                 aria-hidden
-                className="flex h-32 w-7 shrink-0 flex-col justify-between border-r border-teal-200 py-0.5 pr-0.5 text-right text-[9px] tabular-nums leading-none text-teal-600 sm:h-36 sm:w-8 sm:pr-1 sm:text-[10px]"
+                className="flex h-full w-7 shrink-0 flex-col justify-between border-r border-teal-200 py-0.5 pr-0.5 text-right text-[9px] tabular-nums leading-none text-teal-600 sm:w-8 sm:pr-1 sm:text-[10px]"
               >
                 {[100, 75, 50, 25, 0].map((tick) => (
                   <span key={tick}>{tick}</span>
                 ))}
               </div>
               <div
-                className={`min-w-0 flex-1 touch-pan-x ${dynMode === 'day' ? 'overflow-x-auto pb-1' : ''}`}
+                className={`min-h-0 min-w-0 flex-1 touch-pan-x overflow-y-hidden [scrollbar-gutter:stable] ${
+                  dynMode === 'day' ? 'overflow-x-auto' : 'overflow-x-hidden'
+                }`}
               >
                 <div
-                  className={`relative h-32 sm:h-36 ${dynMode === 'day' ? 'min-w-max' : ''}`}
+                  className={`relative h-full min-h-0 ${
+                    dynMode === 'day' ? 'min-w-max' : 'w-full'
+                  }`}
                 >
                   <div
                     className="pointer-events-none absolute inset-0 flex flex-col justify-between py-0"
@@ -2391,6 +2439,7 @@ export default function App() {
                     autoComplete="email"
                     inputMode="email"
                     placeholder="Эл. почта"
+                    maxLength={EMAIL_MAX_TOTAL}
                     value={authEmail}
                     onChange={(e) => setAuthEmail(e.target.value)}
                     className="w-full rounded-lg border border-teal-200 px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-teal-400"
@@ -2399,7 +2448,13 @@ export default function App() {
                     <input
                       type={authShowPassword ? 'text' : 'password'}
                       autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
-                      placeholder="Пароль"
+                      placeholder={
+                        authMode === 'register'
+                          ? 'Минимум 8 символов'
+                          : 'Пароль'
+                      }
+                      minLength={authMode === 'register' ? 8 : undefined}
+                      maxLength={authMode === 'register' ? 50 : undefined}
                       value={authPassword}
                       onChange={(e) => setAuthPassword(e.target.value)}
                       className="w-full rounded-lg border border-teal-200 py-2.5 pl-3 pr-11 text-base outline-none focus:ring-2 focus:ring-teal-400"
@@ -2423,6 +2478,8 @@ export default function App() {
                         type={authShowPassword2 ? 'text' : 'password'}
                         autoComplete="new-password"
                         placeholder="Пароль ещё раз"
+                        minLength={8}
+                        maxLength={50}
                         value={authPassword2}
                         onChange={(e) => setAuthPassword2(e.target.value)}
                         className="w-full rounded-lg border border-teal-200 py-2.5 pl-3 pr-11 text-base outline-none focus:ring-2 focus:ring-teal-400"
