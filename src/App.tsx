@@ -11,6 +11,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  Eye,
+  EyeOff,
   Flame,
   LayoutGrid,
   List,
@@ -80,6 +82,36 @@ function errText(e: unknown): string {
     }
   }
   return 'Ошибка запроса'
+}
+
+function friendlyAuthError(e: unknown): string {
+  const msg = errText(e)
+  const low = msg.toLowerCase()
+  if (low.includes('invalid login credentials')) {
+    return 'Неверная почта или пароль. Проверьте данные и попробуйте снова.'
+  }
+  if (low.includes('email not confirmed')) {
+    return 'Почта не подтверждена. Откройте письмо и подтвердите адрес.'
+  }
+  if (low.includes('too many requests') || low.includes('over_request_rate_limit')) {
+    return 'Слишком много попыток. Подождите минуту и повторите.'
+  }
+  if (low.includes('429')) {
+    return 'Сервер временно ограничил запросы. Попробуйте чуть позже.'
+  }
+  if (low.includes('500') || low.includes('internal') || low.includes('database error')) {
+    return 'Сервис временно недоступен. Попробуйте позже.'
+  }
+  if (low.includes('network') || low.includes('failed to fetch')) {
+    return 'Проблема с сетью. Проверьте интернет и повторите.'
+  }
+  if (low.includes('password should')) {
+    return 'Пароль слишком простой. Добавьте заглавные/строчные буквы и цифры.'
+  }
+  if (low.includes('user already registered') || low.includes('already been registered')) {
+    return 'Пользователь с такой почтой уже зарегистрирован. Попробуйте войти.'
+  }
+  return `Не удалось выполнить действие: ${msg}`
 }
 
 type Screen = 'tracker' | 'habits'
@@ -269,6 +301,8 @@ export default function App() {
   const [authEmail, setAuthEmail] = useState('')
   const [authPassword, setAuthPassword] = useState('')
   const [authPassword2, setAuthPassword2] = useState('')
+  const [authShowPassword, setAuthShowPassword] = useState(false)
+  const [authShowPassword2, setAuthShowPassword2] = useState(false)
   const [authName, setAuthName] = useState('')
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
   const [authMenuOpen, setAuthMenuOpen] = useState(false)
@@ -290,6 +324,13 @@ export default function App() {
   const [calendarTarget, setCalendarTarget] = useState<CalendarTarget | null>(null)
   const [calendarY, setCalendarY] = useState(now.getFullYear())
   const [calendarM0, setCalendarM0] = useState(now.getMonth())
+
+  useEffect(() => {
+    if (!authModalOpen) {
+      setAuthShowPassword(false)
+      setAuthShowPassword2(false)
+    }
+  }, [authModalOpen])
 
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768)
@@ -831,7 +872,7 @@ export default function App() {
         email,
         password: authPassword,
       })
-      if (error) setAuthErr(errText(error))
+      if (error) setAuthErr(friendlyAuthError(error))
       else setAuthModalOpen(false)
       return
     }
@@ -860,7 +901,7 @@ export default function App() {
         },
       },
     })
-    if (error) setAuthErr(errText(error))
+    if (error) setAuthErr(friendlyAuthError(error))
     else if (data.user && !data.session) {
       setAuthInfo('Откройте письмо и подтвердите адрес.')
     } else {
@@ -2105,7 +2146,7 @@ export default function App() {
               type="button"
               className="fixed inset-0 z-[90] bg-black/30"
               aria-label="Закрыть меню"
-              onClick={() => setAuthMenuOpen(false)}
+              onMouseDown={() => setAuthMenuOpen(false)}
             />
           )}
           {authMenuOpen && session?.user && (
@@ -2160,7 +2201,7 @@ export default function App() {
             <div className="pointer-events-auto px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1">
               <div className="relative mx-auto h-[4.5rem] max-w-md">
                 <svg
-                  className="absolute inset-0 h-full w-full text-teal-800 drop-shadow-[0_-6px_24px_rgba(15,118,110,0.2)]"
+                  className="absolute inset-0 h-full w-full rounded-t-[2.2rem] rounded-b-[1.2rem] text-teal-800 drop-shadow-[0_-6px_24px_rgba(15,118,110,0.2)]"
                   viewBox="0 0 400 80"
                   preserveAspectRatio="none"
                   aria-hidden
@@ -2273,17 +2314,28 @@ export default function App() {
       {authModalOpen && (
         <div
           className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 p-4"
-          onClick={() => setAuthModalOpen(false)}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setAuthModalOpen(false)
+          }}
         >
           <div
             role="dialog"
             aria-modal="true"
-            className="w-full max-w-md rounded-2xl border border-teal-200 bg-white p-4 shadow-2xl sm:p-5"
-            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-t-2xl rounded-b-xl border border-teal-200 bg-white p-4 shadow-2xl sm:p-5"
           >
-            <h3 className="mb-3 text-lg font-semibold text-teal-900">
-              {authMode === 'login' ? 'Вход' : 'Регистрация'}
-            </h3>
+            <div className="mb-3 flex items-start justify-between gap-2">
+              <h3 className="text-lg font-semibold text-teal-900">
+                {authMode === 'login' ? 'Вход' : 'Регистрация'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setAuthModalOpen(false)}
+                className="-m-1 rounded-lg p-1.5 text-teal-600 hover:bg-teal-50"
+                aria-label="Закрыть"
+              >
+                <X className="h-5 w-5" strokeWidth={2} />
+              </button>
+            </div>
             {!supabaseConfigured && (
               <p className="text-sm text-amber-800">
                 Вход недоступен: не заданы переменные Supabase для сборки.
@@ -2343,23 +2395,51 @@ export default function App() {
                     onChange={(e) => setAuthEmail(e.target.value)}
                     className="w-full rounded-lg border border-teal-200 px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-teal-400"
                   />
-                  <input
-                    type="password"
-                    autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
-                    placeholder="Пароль"
-                    value={authPassword}
-                    onChange={(e) => setAuthPassword(e.target.value)}
-                    className="w-full rounded-lg border border-teal-200 px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-teal-400"
-                  />
-                  {authMode === 'register' && (
+                  <div className="relative">
                     <input
-                      type="password"
-                      autoComplete="new-password"
-                      placeholder="Пароль ещё раз"
-                      value={authPassword2}
-                      onChange={(e) => setAuthPassword2(e.target.value)}
-                      className="w-full rounded-lg border border-teal-200 px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-teal-400"
+                      type={authShowPassword ? 'text' : 'password'}
+                      autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
+                      placeholder="Пароль"
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      className="w-full rounded-lg border border-teal-200 py-2.5 pl-3 pr-11 text-base outline-none focus:ring-2 focus:ring-teal-400"
                     />
+                    <button
+                      type="button"
+                      onClick={() => setAuthShowPassword((v) => !v)}
+                      className="absolute right-1 top-1/2 -translate-y-1/2 rounded-md p-2 text-teal-600 hover:bg-teal-50"
+                      aria-label={authShowPassword ? 'Скрыть пароль' : 'Показать пароль'}
+                    >
+                      {authShowPassword ? (
+                        <EyeOff className="h-5 w-5" strokeWidth={1.75} />
+                      ) : (
+                        <Eye className="h-5 w-5" strokeWidth={1.75} />
+                      )}
+                    </button>
+                  </div>
+                  {authMode === 'register' && (
+                    <div className="relative">
+                      <input
+                        type={authShowPassword2 ? 'text' : 'password'}
+                        autoComplete="new-password"
+                        placeholder="Пароль ещё раз"
+                        value={authPassword2}
+                        onChange={(e) => setAuthPassword2(e.target.value)}
+                        className="w-full rounded-lg border border-teal-200 py-2.5 pl-3 pr-11 text-base outline-none focus:ring-2 focus:ring-teal-400"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setAuthShowPassword2((v) => !v)}
+                        className="absolute right-1 top-1/2 -translate-y-1/2 rounded-md p-2 text-teal-600 hover:bg-teal-50"
+                        aria-label={authShowPassword2 ? 'Скрыть пароль' : 'Показать пароль'}
+                      >
+                        {authShowPassword2 ? (
+                          <EyeOff className="h-5 w-5" strokeWidth={1.75} />
+                        ) : (
+                          <Eye className="h-5 w-5" strokeWidth={1.75} />
+                        )}
+                      </button>
+                    </div>
                   )}
                   <button
                     type="button"
@@ -2372,21 +2452,41 @@ export default function App() {
                 </div>
               </>
             )}
-            {authErr && <p className="mt-2 text-sm text-rose-700">{authErr}</p>}
+            {authErr && (
+              <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
+                <p className="font-semibold">Не получилось выполнить запрос</p>
+                <p className="mt-1 leading-snug">{authErr}</p>
+              </div>
+            )}
             {authInfo && <p className="mt-2 text-sm text-emerald-800">{authInfo}</p>}
           </div>
         </div>
       )}
 
       {modal && (
-        <div className="fixed inset-0 z-[120] flex items-end justify-center bg-black/40 p-0 sm:items-center sm:p-4">
+        <div
+          className="fixed inset-0 z-[120] flex max-h-[100dvh] items-end justify-center overflow-y-auto overscroll-contain bg-black/40 p-0 sm:items-center sm:p-4 sm:py-8"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setModal(false)
+          }}
+        >
           <div
             role="dialog"
-            className="max-h-[min(92dvh,100vh-env(safe-area-inset-bottom))] w-full max-w-lg overflow-y-auto rounded-t-2xl border border-teal-200 bg-white p-4 shadow-2xl sm:max-h-[85vh] sm:rounded-2xl sm:p-6"
+            className="my-2 w-full max-w-lg max-h-[min(92dvh,calc(100dvh-env(safe-area-inset-bottom)-1rem))] overflow-y-auto rounded-t-2xl rounded-b-xl border border-teal-200 bg-white p-4 shadow-2xl sm:my-auto sm:max-h-[min(90vh,calc(100dvh-4rem))] sm:rounded-t-2xl sm:rounded-b-xl sm:p-6"
           >
-            <h3 className="mb-4 text-lg font-semibold text-teal-900">
-              Новая привычка
-            </h3>
+            <div className="mb-4 flex items-start justify-between gap-2">
+              <h3 className="text-lg font-semibold text-teal-900">
+                Новая привычка
+              </h3>
+              <button
+                type="button"
+                onClick={() => setModal(false)}
+                className="-m-1 shrink-0 rounded-lg p-1.5 text-teal-600 hover:bg-teal-50"
+                aria-label="Закрыть"
+              >
+                <X className="h-5 w-5" strokeWidth={2} />
+              </button>
+            </div>
             <label className="mb-2 block text-sm font-medium text-teal-800">
               Название
               <input
@@ -2476,13 +2576,20 @@ export default function App() {
       {calendarTarget && (
         <div
           className="fixed inset-0 z-[124] flex items-end justify-center bg-black/40 p-3 sm:items-center sm:p-4"
-          onClick={() => setCalendarTarget(null)}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setCalendarTarget(null)
+          }}
         >
-          <div
-            className="w-full max-w-sm rounded-2xl border border-teal-200 bg-white p-4 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-3 flex items-center justify-between">
+          <div className="relative w-full max-w-sm rounded-t-2xl rounded-b-xl border border-teal-200 bg-white p-4 shadow-2xl sm:rounded-2xl">
+            <button
+              type="button"
+              onClick={() => setCalendarTarget(null)}
+              className="absolute right-3 top-3 z-10 rounded-lg p-1.5 text-teal-600 hover:bg-teal-50"
+              aria-label="Закрыть"
+            >
+              <X className="h-5 w-5" strokeWidth={2} />
+            </button>
+            <div className="mb-3 flex items-center justify-between pr-10">
               <button
                 type="button"
                 onClick={() => {
@@ -2565,18 +2672,27 @@ export default function App() {
       {deleteConfirmId && (
         <div
           className="fixed inset-0 z-[125] flex items-center justify-center bg-black/40 p-4"
-          onClick={() => setDeleteConfirmId(null)}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setDeleteConfirmId(null)
+          }}
         >
           <div
             role="alertdialog"
             aria-modal="true"
             aria-labelledby="delete-habit-title"
-            className="w-full max-w-sm rounded-2xl border border-teal-200 bg-white p-5 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
+            className="relative w-full max-w-sm rounded-t-2xl rounded-b-xl border border-teal-200 bg-white p-5 shadow-2xl sm:rounded-2xl"
           >
+            <button
+              type="button"
+              onClick={() => setDeleteConfirmId(null)}
+              className="absolute right-3 top-3 rounded-lg p-1.5 text-teal-600 hover:bg-teal-50"
+              aria-label="Закрыть"
+            >
+              <X className="h-5 w-5" strokeWidth={2} />
+            </button>
             <div
               id="delete-habit-title"
-              className="space-y-2 text-center text-base leading-snug text-teal-900"
+              className="space-y-2 px-8 text-center text-base leading-snug text-teal-900"
             >
               <p className="mb-0">Вы уверены, что хотите удалить привычку</p>
               {habitPendingDelete ? (
