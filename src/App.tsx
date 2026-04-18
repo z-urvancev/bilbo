@@ -43,6 +43,31 @@ const STORAGE_KEY = 'habit-calendar-v1'
 
 const CHART_BAR_MAX_PX = 112
 
+function errText(e: unknown): string {
+  if (e == null) return 'Неизвестная ошибка'
+  if (typeof e === 'string') return e
+  if (typeof e === 'number' || typeof e === 'boolean') return String(e)
+  if (e instanceof Error) return e.message || 'Ошибка'
+  if (typeof e === 'object') {
+    const o = e as Record<string, unknown>
+    const m = o.message
+    if (typeof m === 'string' && m.trim()) return m
+    const msg = o.msg
+    if (typeof msg === 'string' && msg.trim()) return msg
+    const ed = o.error_description
+    if (typeof ed === 'string' && ed.trim()) return ed
+    const er = o.error
+    if (typeof er === 'string') return er
+    try {
+      const j = JSON.stringify(e)
+      if (j && j !== '{}') return j
+    } catch {
+      void 0
+    }
+  }
+  return 'Ошибка запроса'
+}
+
 type Screen = 'tracker' | 'settings'
 type DynMode = 'day' | 'week' | 'month' | 'year'
 
@@ -170,6 +195,7 @@ export default function App() {
   const [m0, setM0] = useState(now.getMonth())
   const [selectedD, setSelectedD] = useState<number | null>(now.getDate())
   const [modal, setModal] = useState(false)
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
   const [formName, setFormName] = useState('')
   const [formEmoji, setFormEmoji] = useState('🎯')
   const [formGoal, setFormGoal] = useState(20)
@@ -233,7 +259,7 @@ export default function App() {
         if (!cancelled) setSupabaseSyncPhase('ready')
       } catch (e) {
         if (!cancelled) {
-          setSyncErr(e instanceof Error ? e.message : String(e))
+          setSyncErr(errText(e))
           setSupabaseSyncPhase('idle')
         }
       }
@@ -253,7 +279,7 @@ export default function App() {
           setSyncErr(null)
           await pushToSupabase(uid, habitsRef.current, completionsRef.current)
         } catch (e) {
-          setSyncErr(e instanceof Error ? e.message : String(e))
+          setSyncErr(errText(e))
         }
       })()
     }, 650)
@@ -315,6 +341,14 @@ export default function App() {
   const habitsPositive = useMemo(
     () => habits.filter((h) => !h.negative),
     [habits],
+  )
+
+  const habitPendingDelete = useMemo(
+    () =>
+      deleteConfirmId
+        ? habits.find((h) => h.id === deleteConfirmId)
+        : undefined,
+    [habits, deleteConfirmId],
   )
 
   const chartSeries = useMemo(() => {
@@ -573,7 +607,7 @@ export default function App() {
                       email,
                       password: authPassword,
                     })
-                    if (error) setAuthErr(error.message)
+                    if (error) setAuthErr(errText(error))
                     return
                   }
                   if (authPassword.length < 6) {
@@ -594,7 +628,7 @@ export default function App() {
                       ).href,
                     },
                   })
-                  if (error) setAuthErr(error.message)
+                  if (error) setAuthErr(errText(error))
                   else {
                     if (data.user && !data.session) {
                       setAuthInfo('Откройте письмо и подтвердите адрес.')
@@ -851,7 +885,7 @@ export default function App() {
                           </span>
                           <button
                             type="button"
-                            onClick={() => removeHabit(h.id)}
+                            onClick={() => setDeleteConfirmId(h.id)}
                             className={`shrink-0 rounded p-1 ${
                               h.negative
                                 ? 'text-rose-600 hover:bg-rose-100 hover:text-rose-900'
@@ -896,76 +930,86 @@ export default function App() {
               </table>
             </div>
 
-            <div className="w-full shrink-0 border-t border-teal-200 bg-teal-50/90 lg:w-[16.5rem] lg:border-l lg:border-t-0">
-              <div className="border-b border-teal-200 bg-teal-200 text-[10px] font-semibold uppercase tracking-wide text-teal-900">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 bg-teal-100 px-2 py-2">
-                  <span className="inline-flex items-center gap-0.5">
-                    <Target className="h-3.5 w-3.5" /> Цель
-                  </span>
-                  <span className="inline-flex items-center gap-0.5">
-                    <BarChart3 className="h-3.5 w-3.5" /> Прогресс
-                  </span>
-                  <span className="inline-flex items-center gap-0.5">
-                    Σ Всего
-                  </span>
-                  <span className="inline-flex items-center gap-0.5">
-                    <Flame className="h-3.5 w-3.5" /> Серия
-                  </span>
-                  <span className="inline-flex items-center gap-0.5">
-                    <Trophy className="h-3.5 w-3.5" /> Рекорд
-                  </span>
-                </div>
-              </div>
-              <div className="divide-y divide-teal-200">
-                {orderedHabits.map((h) => {
-                  if (h.negative) {
-                    return (
-                      <div
-                        key={h.id}
-                        className="border-t border-teal-200/80 bg-teal-50/90 py-2"
-                      />
-                    )
-                  }
-                  const map = completions[h.id]
-                  const done = totalSuccessInMonth(h, map, y, m0)
-                  const goal = h.monthlyGoal
-                  const pct = progressPercent(done, goal)
-                  const cur = currentStreakEndingAt(h, map, y, m0, today)
-                  const lon = longestStreakInMonth(h, map, y, m0)
-                  const bar = Math.min(100, pct)
-                  return (
-                    <div
-                      key={h.id}
-                      className={`flex flex-col gap-2 px-3 py-3 text-xs ${rowStyle(h)} text-teal-900`}
-                    >
-                      <div className="flex flex-wrap gap-x-3 gap-y-1">
-                        <span>
-                          <Target className="mr-0.5 inline h-3 w-3 align-text-bottom" />
-                          {goal}
-                        </span>
-                        <span className="font-semibold">{pct}%</span>
-                        <span>Σ {done}</span>
-                        <span>
-                          <Flame className="mr-0.5 inline h-3 w-3 align-text-bottom" />
-                          {cur}
-                        </span>
-                        <span>
-                          <Trophy className="mr-0.5 inline h-3 w-3 align-text-bottom" />
-                          {lon}
-                        </span>
-                      </div>
-                      <div className="h-2 w-full shrink-0 overflow-hidden rounded-full bg-emerald-100 ring-1 ring-emerald-200/60">
-                        <div
-                          className="h-full rounded-full bg-emerald-500 transition-all"
-                          style={{
-                            width: `${bar}%`,
-                            minWidth: bar > 0 ? '2px' : undefined,
-                          }}
-                        />
-                      </div>
+            <div className="w-full shrink-0 border-t border-teal-200 bg-teal-50/90 lg:min-w-[21rem] lg:w-[21rem] lg:max-w-none lg:border-l lg:border-t-0">
+              <div className="overflow-x-auto [-webkit-overflow-scrolling:touch]">
+                <div className="min-w-[18.5rem] sm:min-w-[20rem]">
+                  <div className="grid grid-cols-5 gap-x-0.5 border-b border-teal-200 bg-teal-100 px-1.5 py-2 text-[9px] font-semibold uppercase leading-tight tracking-wide text-teal-900 sm:gap-x-1 sm:px-2 sm:text-[10px]">
+                    <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
+                      <Target className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      <span className="whitespace-nowrap">Цель</span>
                     </div>
-                  )
-                })}
+                    <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
+                      <BarChart3 className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      <span className="whitespace-nowrap">Прогресс</span>
+                    </div>
+                    <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
+                      <span className="text-xs leading-none" aria-hidden>
+                        Σ
+                      </span>
+                      <span className="whitespace-nowrap">Всего</span>
+                    </div>
+                    <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
+                      <Flame className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      <span className="whitespace-nowrap">Серия</span>
+                    </div>
+                    <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
+                      <Trophy className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      <span className="whitespace-nowrap">Рекорд</span>
+                    </div>
+                  </div>
+                  <div className="divide-y divide-teal-200">
+                    {orderedHabits.map((h) => {
+                      if (h.negative) {
+                        return (
+                          <div
+                            key={h.id}
+                            className="border-t border-teal-200/80 bg-teal-50/90 py-2"
+                          />
+                        )
+                      }
+                      const map = completions[h.id]
+                      const done = totalSuccessInMonth(h, map, y, m0)
+                      const goal = h.monthlyGoal
+                      const pct = progressPercent(done, goal)
+                      const cur = currentStreakEndingAt(h, map, y, m0, today)
+                      const lon = longestStreakInMonth(h, map, y, m0)
+                      const bar = Math.min(100, pct)
+                      return (
+                        <div
+                          key={h.id}
+                          className={`flex flex-col gap-2 px-1.5 py-2 text-xs sm:px-2 ${rowStyle(h)} text-teal-900`}
+                        >
+                          <div className="grid grid-cols-5 gap-x-0.5 sm:gap-x-1">
+                            <div className="min-w-0 text-center tabular-nums">
+                              {goal}
+                            </div>
+                            <div className="min-w-0 text-center font-semibold tabular-nums">
+                              {pct}%
+                            </div>
+                            <div className="min-w-0 text-center tabular-nums">
+                              {done}
+                            </div>
+                            <div className="min-w-0 text-center tabular-nums">
+                              {cur}
+                            </div>
+                            <div className="min-w-0 text-center tabular-nums">
+                              {lon}
+                            </div>
+                          </div>
+                          <div className="h-2 w-full shrink-0 overflow-hidden rounded-full bg-emerald-100 ring-1 ring-emerald-200/60">
+                            <div
+                              className="h-full rounded-full bg-emerald-500 transition-all"
+                              style={{
+                                width: `${bar}%`,
+                                minWidth: bar > 0 ? '2px' : undefined,
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -1053,6 +1097,57 @@ export default function App() {
                 className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-medium text-white shadow hover:bg-teal-800"
               >
                 Сохранить
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteConfirmId && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setDeleteConfirmId(null)}
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-habit-title"
+            className="w-full max-w-sm rounded-2xl border border-teal-200 bg-white p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              id="delete-habit-title"
+              className="space-y-2 text-center text-base leading-snug text-teal-900"
+            >
+              <p className="mb-0">Вы уверены, что хотите удалить привычку</p>
+              {habitPendingDelete ? (
+                <p className="mb-0 font-semibold">
+                  <span className="mr-1.5 inline-block" aria-hidden>
+                    {habitPendingDelete.emoji}
+                  </span>
+                  {habitPendingDelete.name}?
+                </p>
+              ) : (
+                <p className="mb-0">?</p>
+              )}
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmId(null)}
+                className="rounded-lg px-4 py-2 text-sm font-medium text-teal-800 hover:bg-teal-50"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  removeHabit(deleteConfirmId)
+                  setDeleteConfirmId(null)
+                }}
+                className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white shadow hover:bg-rose-700"
+              >
+                Удалить
               </button>
             </div>
           </div>
