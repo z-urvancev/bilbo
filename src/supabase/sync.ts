@@ -82,7 +82,7 @@ export async function pushToSupabase(
       updated_at: new Date().toISOString(),
     }))
     const { error: eUp } = await supabase.from('habits').upsert(rows, {
-      onConflict: 'id',
+      onConflict: 'user_id,id',
     })
     if (eUp) throw eUp
   }
