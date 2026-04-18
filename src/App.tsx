@@ -172,7 +172,7 @@ function Cell({
 }) {
   const marked = raw === true
   let cls =
-    'flex h-7 w-7 shrink-0 items-center justify-center rounded border text-xs transition focus:outline-none focus:ring-2 focus:ring-teal-400 sm:h-8 sm:w-8 sm:text-sm'
+    'flex h-6 w-6 shrink-0 touch-manipulation select-none items-center justify-center rounded border text-xs transition focus:outline-none focus:ring-2 focus:ring-teal-400 sm:h-8 sm:w-8 sm:text-sm'
   if (!habit.negative) {
     cls += marked
       ? ' border-emerald-600 bg-emerald-500 text-white shadow-sm'
@@ -1150,14 +1150,24 @@ export default function App() {
         ) : (
           <div className="flex flex-col gap-0 overflow-hidden rounded-xl border border-teal-200 bg-white shadow-md lg:flex-row">
             {(!isMobile || mobileTrackerTab === 'marks') && (
-            <div className="flex min-w-0 flex-1 items-stretch gap-1">
-              <div className="min-w-0 flex-1 overflow-x-auto [-webkit-overflow-scrolling:touch]">
-              <table className="w-max min-w-full border-collapse text-xs sm:text-sm">
+            <div className="flex min-w-0 flex-1 touch-pan-y items-stretch gap-1">
+              <div
+                className={`min-w-0 flex-1 ${
+                  isMobile
+                    ? 'overflow-x-hidden'
+                    : 'overflow-x-auto [-webkit-overflow-scrolling:touch]'
+                }`}
+              >
+              <table
+                className={`border-collapse text-xs sm:text-sm ${
+                  isMobile ? 'w-full table-fixed' : 'w-max min-w-full'
+                }`}
+              >
                 <thead>
                   <tr className="bg-teal-700 text-white">
                     <th
                       rowSpan={2}
-                      className={`sticky left-0 z-20 border border-teal-600 bg-teal-700 px-1.5 py-2 align-middle text-left text-xs font-semibold sm:max-w-none sm:min-w-[10rem] sm:px-2 sm:text-sm ${isMobile ? 'max-w-[34vw] min-w-[5.5rem]' : 'max-w-[42vw] min-w-[7.5rem]'}`}
+                      className={`sticky left-0 z-20 border border-teal-600 bg-teal-700 px-1.5 py-2 align-middle text-left text-xs font-semibold sm:max-w-none sm:min-w-[10rem] sm:px-2 sm:text-sm ${isMobile ? 'w-[6.4rem] min-w-[6.4rem] max-w-[6.4rem]' : 'max-w-[42vw] min-w-[7.5rem]'}`}
                     >
                       Привычка
                     </th>
@@ -1165,7 +1175,7 @@ export default function App() {
                       <th
                         key={col.key}
                         className={`border border-teal-600 px-0 py-1.5 text-center text-[10px] font-medium sm:min-w-[2.25rem] sm:text-xs ${
-                          isMobile ? 'min-w-[1.65rem]' : 'min-w-[2rem]'
+                          isMobile ? 'w-[2.05rem] min-w-[2.05rem]' : 'min-w-[2rem]'
                         } ${
                           col.isToday ? 'bg-teal-500' : ''
                         }`}
@@ -1179,7 +1189,7 @@ export default function App() {
                       <th
                         key={`w-${col.key}`}
                         className={`border border-teal-600 px-0 pb-1.5 pt-0 text-center text-[9px] font-normal opacity-95 sm:min-w-[2.25rem] sm:text-[10px] ${
-                          isMobile ? 'min-w-[1.65rem]' : 'min-w-[2rem]'
+                          isMobile ? 'w-[2.05rem] min-w-[2.05rem]' : 'min-w-[2rem]'
                         } ${
                           col.isToday ? 'bg-teal-500' : ''
                         }`}
@@ -1194,7 +1204,7 @@ export default function App() {
                     <tr key={h.id}>
                       <td
                         className={`sticky left-0 z-10 border border-slate-200 px-1.5 py-1 text-xs font-medium sm:max-w-none sm:min-w-[10rem] sm:px-2 sm:text-sm ${
-                          isMobile ? 'max-w-[34vw] min-w-[5.5rem]' : 'max-w-[42vw] min-w-[7.5rem]'
+                          isMobile ? 'w-[6.4rem] min-w-[6.4rem] max-w-[6.4rem]' : 'max-w-[42vw] min-w-[7.5rem]'
                         } ${
                           h.negative ? 'text-rose-950' : 'text-teal-950'
                         } ${rowStyle(h)} border-r-teal-100/80 shadow-[4px_0_8px_-2px_rgba(15,118,110,0.12)]`}
@@ -1268,7 +1278,7 @@ export default function App() {
                           return (
                             <td
                               key={key}
-                              className={`border border-slate-200 p-0.5 text-center ${hi}`}
+                              className={`border border-slate-200 text-center ${isMobile ? 'p-0' : 'p-0.5'} ${hi}`}
                             >
                               <div className="flex justify-center">
                                 <Cell
