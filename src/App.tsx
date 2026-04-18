@@ -692,7 +692,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-svh bg-gradient-to-b from-teal-50 to-white pb-[env(safe-area-inset-bottom,0px)] pl-[max(0.75rem,env(safe-area-inset-left,0px))] pr-[max(0.75rem,env(safe-area-inset-right,0px))] pt-[env(safe-area-inset-top,0px)]">
+    <div className="min-h-svh bg-gradient-to-b from-teal-50 to-white pb-[env(safe-area-inset-bottom,0px)] pt-[env(safe-area-inset-top,0px)]">
       <header className="border-b border-teal-200 bg-teal-700 px-3 py-3 text-white shadow-md sm:px-4 sm:py-4">
         <div className="mx-auto max-w-7xl">
           {isMobile ? (
