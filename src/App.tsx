@@ -4,16 +4,24 @@ import {
   BarChart3,
   ChevronLeft,
   ChevronRight,
+  Clock,
   Flame,
+  LayoutGrid,
+  List,
+  MoreVertical,
   Plus,
   Target,
-  Trash2,
   Trophy,
+  User,
+  X,
 } from 'lucide-react'
 import type { Completions, Habit, Persisted } from './types'
+import { habitHiddenFromTracker, habitInactiveInList } from './habitUtils'
 import {
   dateKey,
   daysInMonth,
+  pad2,
+  parseKey,
   weekdayMon0,
 } from './dates'
 import {
@@ -76,6 +84,35 @@ type DayColumn = {
   day: number
   weekday: string
   isToday: boolean
+}
+
+function WeekDot({
+  habit,
+  raw,
+  onToggle,
+}: {
+  habit: Habit
+  raw: boolean | undefined
+  onToggle: () => void
+}) {
+  const marked = raw === true
+  let cls =
+    'flex h-9 w-9 shrink-0 touch-manipulation select-none items-center justify-center rounded-full border text-xs font-semibold transition focus:outline-none focus:ring-2 focus:ring-teal-400'
+  if (!habit.negative) {
+    cls += marked
+      ? ' border-emerald-600 bg-emerald-500 text-white shadow-sm'
+      : ' border-slate-200 bg-white hover:bg-slate-50'
+  } else {
+    cls += !marked
+      ? ' border-emerald-400 bg-emerald-100 text-emerald-900'
+      : ' border-rose-300 bg-rose-200 text-rose-900'
+  }
+  return (
+    <button type="button" className={cls} onClick={onToggle} aria-pressed={marked}>
+      {!habit.negative && marked ? '✓' : habit.negative && !marked ? '·' : ''}
+      {habit.negative && marked ? '✕' : ''}
+    </button>
+  )
 }
 
 function loadPersisted(): Persisted {
@@ -203,16 +240,21 @@ export default function App() {
   const [selectedD, setSelectedD] = useState<number | null>(now.getDate())
   const [modal, setModal] = useState(false)
   const [authModalOpen, setAuthModalOpen] = useState(false)
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640)
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768)
   const [mobileTrackerTab, setMobileTrackerTab] =
     useState<MobileTrackerTab>('marks')
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
+  const [emojiPickerForId, setEmojiPickerForId] = useState<string | null>(null)
+  const [goalInputDrafts, setGoalInputDrafts] = useState<Record<string, string>>({})
   const [editingHabitId, setEditingHabitId] = useState<string | null>(null)
   const [editingName, setEditingName] = useState('')
   const [formName, setFormName] = useState('')
   const [formEmoji, setFormEmoji] = useState('🎯')
   const [formGoalInput, setFormGoalInput] = useState('20')
   const [formNeg, setFormNeg] = useState(false)
+  const [formDeadline, setFormDeadline] = useState('')
+  const [moreMenuHabitId, setMoreMenuHabitId] = useState<string | null>(null)
+  const [clockMenuHabitId, setClockMenuHabitId] = useState<string | null>(null)
   const [session, setSession] = useState<Session | null>(null)
   const [authEmail, setAuthEmail] = useState('')
   const [authPassword, setAuthPassword] = useState('')
@@ -227,7 +269,6 @@ export default function App() {
     'idle' | 'pulling' | 'ready'
   >('idle')
   const [exportIncludeProgress, setExportIncludeProgress] = useState(true)
-  const mobileWeekPickerRef = useRef<HTMLInputElement | null>(null)
   const habitsRef = useRef(habits)
   const completionsRef = useRef(completions)
   habitsRef.current = habits
@@ -236,9 +277,13 @@ export default function App() {
   const pendingRef = useRef<PendingOutgoing[]>([])
   const flushTimerRef = useRef<number | undefined>(undefined)
   const goalDebouncersRef = useRef<Record<string, number>>({})
+  const mobileWeekPickerRef = useRef<HTMLInputElement | null>(null)
+  const clockDateRef = useRef<HTMLInputElement | null>(null)
+  const clockPickHabitIdRef = useRef<string | null>(null)
+  const clockPickModeRef = useRef<'postpone' | 'deadline' | null>(null)
 
   useEffect(() => {
-    const onResize = () => setIsMobile(window.innerWidth < 640)
+    const onResize = () => setIsMobile(window.innerWidth < 768)
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
@@ -263,8 +308,42 @@ export default function App() {
   }, [session?.user?.id])
 
   useEffect(() => {
+    setAuthMenuOpen(false)
+  }, [screen, mobileTrackerTab])
+
+  useEffect(() => {
+    if (emojiPickerForId == null) return
+    const onDoc = (ev: MouseEvent) => {
+      const t = ev.target
+      if (t instanceof Element && t.closest('[data-emoji-picker-root]')) return
+      setEmojiPickerForId(null)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [emojiPickerForId])
+
+  useEffect(() => {
     savePersisted({ habits, completions })
   }, [habits, completions])
+
+  useEffect(() => {
+    if (!modal) return
+    const d = new Date()
+    d.setMonth(d.getMonth() + 1)
+    setFormDeadline(dateKey(d.getFullYear(), d.getMonth(), d.getDate()))
+  }, [modal])
+
+  useEffect(() => {
+    if (moreMenuHabitId == null && clockMenuHabitId == null) return
+    const onDoc = (ev: MouseEvent) => {
+      const t = ev.target
+      if (t instanceof Element && t.closest('[data-habit-menu-root]')) return
+      setMoreMenuHabitId(null)
+      setClockMenuHabitId(null)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [moreMenuHabitId, clockMenuHabitId])
 
   const flushPendingInternal = useCallback(async () => {
     if (!session?.user || !supabase || pendingRef.current.length === 0) return
@@ -303,6 +382,74 @@ export default function App() {
     },
     [session?.user, supabaseSyncPhase, flushPendingInternal],
   )
+
+  const applyClockDate = useCallback(
+    (value: string) => {
+      const id = clockPickHabitIdRef.current
+      const mode = clockPickModeRef.current
+      if (!value || !id || !mode) return
+      const h = habitsRef.current.find((x) => x.id === id)
+      if (!h) return
+      if (mode === 'postpone') {
+        dispatch('habit_upsert', { ...h, archived: true, postponedUntil: value })
+      } else {
+        dispatch('habit_upsert', {
+          ...h,
+          deadline: value,
+          archived: false,
+          postponedUntil: null,
+        })
+      }
+      clockPickHabitIdRef.current = null
+      clockPickModeRef.current = null
+    },
+    [dispatch],
+  )
+
+  const openClockPicker = useCallback(
+    (
+      habitId: string,
+      mode: 'postpone' | 'deadline',
+      anchor: HTMLElement | null,
+    ) => {
+      clockPickHabitIdRef.current = habitId
+      clockPickModeRef.current = mode
+      setClockMenuHabitId(null)
+      setMoreMenuHabitId(null)
+      window.requestAnimationFrame(() => {
+        const el = clockDateRef.current
+        if (!el) return
+        if (anchor) {
+          const r = anchor.getBoundingClientRect()
+          const pad = 4
+          el.style.position = 'fixed'
+          el.style.left = `${Math.min(
+            Math.max(pad, r.left),
+            window.innerWidth - pad,
+          )}px`
+          el.style.top = `${Math.min(
+            Math.max(pad, r.bottom),
+            window.innerHeight - pad,
+          )}px`
+          el.style.width = '1px'
+          el.style.height = '1px'
+        }
+        if (typeof el.showPicker === 'function') el.showPicker()
+        else el.click()
+      })
+    },
+    [],
+  )
+
+  useEffect(() => {
+    const t = new Date()
+    const tk = dateKey(t.getFullYear(), t.getMonth(), t.getDate())
+    habits.forEach((h) => {
+      if (h.postponedUntil && tk >= h.postponedUntil) {
+        dispatch('habit_upsert', { ...h, archived: false, postponedUntil: null })
+      }
+    })
+  }, [habits, dispatch])
 
   const pullIncremental = useCallback(async () => {
     if (!session?.user || supabaseSyncPhase !== 'ready' || !supabase) return
@@ -411,12 +558,29 @@ export default function App() {
     const [ly, lm, ld] = last.key.split('-').map(Number)
     const fDate = new Date(fy, (fm ?? 1) - 1, fd ?? 1)
     const lDate = new Date(ly, (lm ?? 1) - 1, ld ?? 1)
+    try {
+      const opts: Intl.DateTimeFormatOptions = {
+        day: 'numeric',
+        month: 'long',
+      }
+      if (fDate.getFullYear() !== lDate.getFullYear()) {
+        opts.year = 'numeric'
+      }
+      const fmt = new Intl.DateTimeFormat('ru-RU', opts)
+      const anyFmt = fmt as Intl.DateTimeFormat & {
+        formatRange?: (a: Date, b: Date) => string
+      }
+      if (typeof anyFmt.formatRange === 'function') {
+        return anyFmt.formatRange(fDate, lDate)
+      }
+    } catch {
+      void 0
+    }
     const ru = new Intl.DateTimeFormat('ru-RU', {
       day: 'numeric',
       month: 'long',
     })
-    const yText = lDate.getFullYear()
-    return `${ru.format(fDate)} - ${ru.format(lDate)} ${yText} г.`
+    return `${ru.format(fDate)} — ${ru.format(lDate)}`
   }, [isMobile, dayColumns])
   const selectedDateValue = `${y}-${String(m0 + 1).padStart(2, '0')}-${String(
     Math.max(1, Math.min(dim, selectedD ?? todayD)),
@@ -429,15 +593,6 @@ export default function App() {
     setSelectedD(1)
   }
 
-  const selectDate = (value: string) => {
-    if (!value) return
-    const parsed = new Date(`${value}T00:00:00`)
-    if (Number.isNaN(parsed.getTime())) return
-    setY(parsed.getFullYear())
-    setM0(parsed.getMonth())
-    setSelectedD(parsed.getDate())
-  }
-
   const moveMobileWeek = (deltaWeeks: number) => {
     const baseDay = selectedD ?? todayD
     const from = new Date(y, m0, baseDay)
@@ -447,16 +602,28 @@ export default function App() {
     setSelectedD(from.getDate())
   }
 
-  const openMobileDatePicker = () => {
-    const p = mobileWeekPickerRef.current
-    if (!p) return
-    if (typeof p.showPicker === 'function') {
-      p.showPicker()
-      return
-    }
-    p.focus()
-    p.click()
+  const selectDate = (value: string) => {
+    if (!value) return
+    const parsed = new Date(`${value}T00:00:00`)
+    if (Number.isNaN(parsed.getTime())) return
+    setY(parsed.getFullYear())
+    setM0(parsed.getMonth())
+    setSelectedD(parsed.getDate())
   }
+
+  const openMobileWeekPicker = useCallback(() => {
+    const el = mobileWeekPickerRef.current
+    if (!el) return
+    try {
+      if (typeof el.showPicker === 'function') {
+        void el.showPicker()
+      } else {
+        el.click()
+      }
+    } catch {
+      el.click()
+    }
+  }, [])
 
   const profileName =
     (session?.user?.user_metadata?.display_name as string | undefined)?.trim() ||
@@ -485,6 +652,9 @@ export default function App() {
         1,
         Math.min(31, Math.floor(Number(formGoalInput)) || 20),
       ),
+      archived: false,
+      deadline: formDeadline || null,
+      postponedUntil: null,
     }
     dispatch('habit_upsert', h)
     setModal(false)
@@ -516,12 +686,18 @@ export default function App() {
   }
 
   const posHabits = useMemo(
-    () => habits.filter((h) => !h.negative),
-    [habits],
+    () =>
+      habits.filter(
+        (h) => !h.negative && !habitHiddenFromTracker(h, todayKey),
+      ),
+    [habits, todayKey],
   )
   const negHabits = useMemo(
-    () => habits.filter((h) => h.negative),
-    [habits],
+    () =>
+      habits.filter(
+        (h) => h.negative && !habitHiddenFromTracker(h, todayKey),
+      ),
+    [habits, todayKey],
   )
 
   const habitPendingDelete = useMemo(
@@ -559,11 +735,26 @@ export default function App() {
           ? `по месяцам ${y}`
           : 'по годам'
 
-  const orderedHabits = useMemo(() => {
-    const pos = habits.filter((h) => !h.negative)
-    const neg = habits.filter((h) => h.negative)
+  const trackerOrderedHabits = useMemo(() => {
+    const visible = habits.filter((h) => !habitHiddenFromTracker(h, todayKey))
+    const pos = visible.filter((h) => !h.negative)
+    const neg = visible.filter((h) => h.negative)
     return [...pos, ...neg]
-  }, [habits])
+  }, [habits, todayKey])
+
+  const habitsEditorSections = useMemo(() => {
+    const active = habits.filter((h) => !habitInactiveInList(h, todayKey))
+    const inactive = habits.filter((h) => habitInactiveInList(h, todayKey))
+    const sort = (a: Habit, b: Habit) => {
+      const an = a.negative ? 1 : 0
+      const bn = b.negative ? 1 : 0
+      if (an !== bn) return an - bn
+      return a.name.localeCompare(b.name, 'ru')
+    }
+    active.sort(sort)
+    inactive.sort(sort)
+    return { active, inactive }
+  }, [habits, todayKey])
 
   const rowStyle = (h: Habit) => {
     if (h.negative) {
@@ -692,39 +883,66 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-svh bg-gradient-to-b from-teal-50 to-white pb-[env(safe-area-inset-bottom,0px)] pt-[env(safe-area-inset-top,0px)]">
-      <header className="border-b border-teal-200 bg-teal-700 px-3 py-3 text-white shadow-md sm:px-4 sm:py-4">
+    <div
+      className={`min-h-svh pb-[env(safe-area-inset-bottom,0px)] pt-[env(safe-area-inset-top,0px)] ${
+        isMobile
+          ? 'bg-[#f9f9f9]'
+          : 'bg-gradient-to-b from-teal-50 to-white'
+      }`}
+    >
+      <header
+        className={
+          isMobile
+            ? 'border-b border-black/[0.06] bg-[#f7f7f7] px-3 pb-3 pt-3 text-neutral-900'
+            : 'border-b border-teal-200 bg-teal-700 px-3 py-3 text-white shadow-md sm:px-4 sm:py-4'
+        }
+      >
         <div className="mx-auto max-w-7xl">
           {isMobile ? (
-            <div className="flex items-center justify-between gap-2">
-              <nav className="flex rounded-lg bg-teal-800/60 p-0.5 text-sm">
-                <button
-                  type="button"
-                  onClick={() => setScreen('tracker')}
-                  className={`rounded-md px-3 py-1.5 font-medium transition ${
-                    screen === 'tracker'
-                      ? 'bg-white text-teal-800 shadow'
-                      : 'text-teal-100 hover:bg-teal-800/80'
-                  }`}
-                >
-                  Трекер
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setScreen('habits')}
-                  className={`rounded-md px-3 py-1.5 font-medium transition ${
-                    screen === 'habits'
-                      ? 'bg-white text-teal-800 shadow'
-                      : 'text-teal-100 hover:bg-teal-800/80'
-                  }`}
-                >
-                  Привычки
-                </button>
-              </nav>
+            screen === 'tracker' ? (
               <div className="flex items-center gap-2">
-                {renderAuthControl(true)}
+                <button
+                  type="button"
+                  onClick={() => moveMobileWeek(-1)}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-neutral-800 shadow-sm ring-1 ring-black/5"
+                  aria-label="Предыдущая неделя"
+                >
+                  <ChevronLeft className="h-5 w-5" />
+                </button>
+                <div className="relative min-w-0 flex-1">
+                  <input
+                    ref={mobileWeekPickerRef}
+                    type="date"
+                    value={selectedDateValue}
+                    onChange={(e) => selectDate(e.target.value)}
+                    className="pointer-events-none absolute h-px w-px overflow-hidden opacity-0"
+                    style={{ fontSize: 16, clip: 'rect(0,0,0,0)' }}
+                    tabIndex={-1}
+                    aria-hidden
+                  />
+                  <button
+                    type="button"
+                    onClick={openMobileWeekPicker}
+                    className="flex min-h-[2.75rem] w-full touch-manipulation items-center justify-center rounded-2xl bg-white px-3 py-2.5 text-center text-base font-semibold leading-tight text-neutral-900 shadow-sm ring-1 ring-black/5 active:bg-neutral-50"
+                    aria-label="Выбрать дату недели"
+                  >
+                    {mobileWeekRangeLabel}
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => moveMobileWeek(1)}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-neutral-800 shadow-sm ring-1 ring-black/5"
+                  aria-label="Следующая неделя"
+                >
+                  <ChevronRight className="h-5 w-5" />
+                </button>
               </div>
-            </div>
+            ) : (
+              <h1 className="text-center text-lg font-semibold tracking-tight text-neutral-900">
+                Привычки
+              </h1>
+            )
           ) : (
             <div className="flex items-center gap-2 sm:gap-3">
               <div className="min-w-0 flex-1 overflow-x-auto [-webkit-overflow-scrolling:touch]">
@@ -803,50 +1021,109 @@ export default function App() {
       )}
 
       {screen === 'habits' ? (
-      <main className="mx-auto max-w-3xl px-3 py-6 sm:py-8">
-        <div className="mb-4 flex items-center justify-between gap-2">
-          <h2 className="text-lg font-semibold text-teal-900">Привычки</h2>
-          <button
-            type="button"
-            onClick={() => setModal(true)}
-            className="inline-flex items-center gap-1 rounded-lg bg-teal-700 px-3 py-2 text-sm font-medium text-white hover:bg-teal-800"
-          >
-            <Plus className="h-4 w-4" />
-            Добавить
-          </button>
-        </div>
-        <div className="space-y-3 rounded-xl border border-teal-200 bg-white p-4 shadow-sm sm:p-5">
-          {orderedHabits.map((h) => (
+      <main
+        className={`mx-auto max-w-3xl px-3 py-6 sm:py-8 ${
+          isMobile ? 'pb-28' : ''
+        }`}
+      >
+        {!isMobile && (
+          <div className="mb-4 flex items-center justify-between gap-2">
+            <h2 className="text-lg font-semibold text-teal-900">Привычки</h2>
+            <button
+              type="button"
+              onClick={() => setModal(true)}
+              className="inline-flex items-center gap-1 rounded-lg bg-teal-700 px-3 py-2 text-sm font-medium text-white hover:bg-teal-800"
+            >
+              <Plus className="h-4 w-4" />
+              Добавить
+            </button>
+          </div>
+        )}
+        <div className="space-y-4">
+          {habitsEditorSections.active.map((h) => (
             <div
               key={h.id}
-              className={`rounded-lg border border-teal-100 px-3 py-3 ${rowStyle(h)}`}
+              className={`rounded-2xl border border-teal-100 px-4 py-3 shadow-sm ${rowStyle(h)}`}
             >
-              <div className="grid grid-cols-[minmax(0,1fr)_4.5rem_auto] items-center gap-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="shrink-0 text-lg">{h.emoji}</span>
-                  <input
-                    type="text"
-                    value={h.name}
-                    onChange={(e) => {
-                      const next = e.target.value
-                      setHabits((prev) =>
-                        prev.map((x) => (x.id === h.id ? { ...x, name: next } : x)),
-                      )
-                    }}
-                    onBlur={() => {
-                      const habit = habitsRef.current.find((x) => x.id === h.id)
-                      if (habit) dispatch('habit_upsert', habit)
-                    }}
-                    className="min-w-0 flex-1 rounded-lg border border-teal-200 bg-white px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-teal-300"
-                  />
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <div
+                  className="relative shrink-0"
+                  data-emoji-picker-root
+                >
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setEmojiPickerForId((id) => (id === h.id ? null : h.id))
+                    }
+                    className="text-2xl leading-none hover:opacity-80"
+                  >
+                    {h.emoji}
+                  </button>
+                  {emojiPickerForId === h.id && (
+                    <div className="absolute left-0 top-full z-30 mt-1 w-[min(16rem,calc(100vw-2rem))] rounded-lg border border-teal-200 bg-white p-2 shadow-lg">
+                      <div className="max-h-52 overflow-y-auto">
+                        <div className="grid grid-cols-8 gap-1 sm:grid-cols-10">
+                          {EMOJI_OPTIONS.map((e) => (
+                            <button
+                              key={e}
+                              type="button"
+                              onClick={() => {
+                                const updated = { ...h, emoji: e }
+                                setHabits((prev) =>
+                                  prev.map((x) =>
+                                    x.id === h.id ? updated : x,
+                                  ),
+                                )
+                                setEmojiPickerForId(null)
+                                dispatch('habit_upsert', updated)
+                              }}
+                              className={`flex aspect-square items-center justify-center rounded-md text-lg transition ${
+                                h.emoji === e
+                                  ? 'bg-teal-600 text-white ring-2 ring-teal-400 ring-offset-1'
+                                  : 'bg-teal-50/80 hover:bg-teal-100'
+                              }`}
+                            >
+                              {e}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <input
-                  type="number"
-                  min={1}
-                  max={31}
-                  value={h.monthlyGoal}
+                  type="text"
+                  value={h.name}
                   onChange={(e) => {
-                    const next = Math.max(1, Math.min(31, Number(e.target.value) || 1))
+                    const next = e.target.value
+                    setHabits((prev) =>
+                      prev.map((x) => (x.id === h.id ? { ...x, name: next } : x)),
+                    )
+                  }}
+                  onBlur={() => {
+                    const habit = habitsRef.current.find((x) => x.id === h.id)
+                    if (habit) dispatch('habit_upsert', habit)
+                  }}
+                  className="min-w-[8rem] flex-1 rounded-lg border border-teal-200 bg-white px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-teal-300"
+                />
+                <input
+                  type="number"
+                  min={h.negative ? 0 : 1}
+                  max={31}
+                  value={(() => {
+                    const draft = goalInputDrafts[h.id]
+                    if (draft !== undefined) return draft
+                    if (!h.negative && h.monthlyGoal < 1) return ''
+                    return String(h.monthlyGoal)
+                  })()}
+                  onChange={(e) => {
+                    const raw = e.target.value
+                    setGoalInputDrafts((prev) => ({ ...prev, [h.id]: raw }))
+                    if (raw === '') return
+                    const n = Number(raw)
+                    if (Number.isNaN(n)) return
+                    const minGoal = h.negative ? 0 : 1
+                    const next = Math.max(minGoal, Math.min(31, Math.floor(n)))
                     setHabits((prev) =>
                       prev.map((x) =>
                         x.id === h.id ? { ...x, monthlyGoal: next } : x,
@@ -856,22 +1133,217 @@ export default function App() {
                     if (tid !== undefined) window.clearTimeout(tid)
                     goalDebouncersRef.current[h.id] = window.setTimeout(() => {
                       const habit = habitsRef.current.find((x) => x.id === h.id)
-                      if (habit) dispatch('habit_upsert', habit)
+                      if (!habit) {
+                        delete goalDebouncersRef.current[h.id]
+                        return
+                      }
+                      if (!habit.negative && habit.monthlyGoal < 1) {
+                        delete goalDebouncersRef.current[h.id]
+                        return
+                      }
+                      dispatch('habit_upsert', habit)
                       delete goalDebouncersRef.current[h.id]
                     }, 500)
                   }}
-                  className="rounded-lg border border-teal-200 bg-white px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-teal-300"
+                  onBlur={() => {
+                    const tid = goalDebouncersRef.current[h.id]
+                    if (tid !== undefined) {
+                      window.clearTimeout(tid)
+                      delete goalDebouncersRef.current[h.id]
+                    }
+                    const raw = goalInputDrafts[h.id]
+                    setGoalInputDrafts((prev) => {
+                      if (!(h.id in prev)) return prev
+                      const next = { ...prev }
+                      delete next[h.id]
+                      return next
+                    })
+                    const habit = habitsRef.current.find((x) => x.id === h.id)
+                    if (!habit) return
+                    const minGoal = habit.negative ? 0 : 1
+                    let normalized = habit.monthlyGoal
+                    if (raw === '') normalized = minGoal
+                    else if (raw !== undefined) {
+                      const parsed = Number(raw)
+                      if (Number.isFinite(parsed)) {
+                        normalized = Math.max(
+                          minGoal,
+                          Math.min(31, Math.floor(parsed)),
+                        )
+                      }
+                    } else if (!habit.negative && habit.monthlyGoal < 1) {
+                      normalized = 1
+                    }
+                    if (normalized !== habit.monthlyGoal) {
+                      const fixed = { ...habit, monthlyGoal: normalized }
+                      setHabits((prev) =>
+                        prev.map((x) => (x.id === h.id ? fixed : x)),
+                      )
+                      dispatch('habit_upsert', fixed)
+                    } else {
+                      dispatch('habit_upsert', habit)
+                    }
+                  }}
+                  className="w-20 rounded-lg border border-teal-200 bg-white px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-teal-300"
                 />
-                <button
-                  type="button"
-                  onClick={() => setDeleteConfirmId(h.id)}
-                  className="justify-self-end rounded-lg border border-rose-300 px-2 py-1.5 text-sm font-medium text-rose-700 hover:bg-rose-50"
+                <div
+                  className="relative ml-auto flex shrink-0 items-center gap-0.5"
+                  data-habit-menu-root
                 >
-                  Удалить
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setClockMenuHabitId((id) =>
+                        id === h.id ? null : h.id,
+                      )
+                      setMoreMenuHabitId(null)
+                    }}
+                    className="rounded-lg p-2 text-teal-700 hover:bg-teal-100"
+                    aria-label="Срок и отложить"
+                  >
+                    <Clock className="h-5 w-5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoreMenuHabitId((id) =>
+                        id === h.id ? null : h.id,
+                      )
+                      setClockMenuHabitId(null)
+                    }}
+                    className="rounded-lg p-2 text-teal-700 hover:bg-teal-100"
+                    aria-label="Ещё"
+                  >
+                    <MoreVertical className="h-5 w-5" />
+                  </button>
+                  {clockMenuHabitId === h.id && (
+                    <div className="absolute bottom-full right-0 z-40 mb-1 min-w-[12rem] rounded-lg border border-teal-200 bg-white py-1 shadow-lg">
+                      <button
+                        type="button"
+                        className="block w-full px-3 py-2 text-left text-sm text-teal-900 hover:bg-teal-50"
+                        onClick={(e) =>
+                          openClockPicker(h.id, 'postpone', e.currentTarget)
+                        }
+                      >
+                        Отложить до
+                      </button>
+                      <button
+                        type="button"
+                        className="block w-full px-3 py-2 text-left text-sm text-teal-900 hover:bg-teal-50"
+                        onClick={(e) =>
+                          openClockPicker(h.id, 'deadline', e.currentTarget)
+                        }
+                      >
+                        Соблюдать до
+                      </button>
+                    </div>
+                  )}
+                  {moreMenuHabitId === h.id && (
+                    <div className="absolute bottom-full right-8 z-40 mb-1 min-w-[10rem] rounded-lg border border-teal-200 bg-white py-1 shadow-lg">
+                      <button
+                        type="button"
+                        className="block w-full px-3 py-2 text-left text-sm text-rose-700 hover:bg-rose-50"
+                        onClick={() => {
+                          setMoreMenuHabitId(null)
+                          setDeleteConfirmId(h.id)
+                        }}
+                      >
+                        Удалить
+                      </button>
+                      <button
+                        type="button"
+                        className="block w-full px-3 py-2 text-left text-sm text-teal-900 hover:bg-teal-50"
+                        onClick={() => {
+                          const habit = habitsRef.current.find(
+                            (x) => x.id === h.id,
+                          )
+                          if (habit)
+                            dispatch('habit_upsert', {
+                              ...habit,
+                              archived: true,
+                              postponedUntil: null,
+                            })
+                          setMoreMenuHabitId(null)
+                        }}
+                      >
+                        В архив
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
+              {h.deadline ? (
+                <div className="mt-1 flex items-start justify-between gap-2">
+                  <p className="min-w-0 text-xs leading-snug text-neutral-600">
+                    Соблюдать до{' '}
+                    {(() => {
+                      const { y, m0, d } = parseKey(h.deadline)
+                      return `${pad2(d)}.${pad2(m0 + 1)}.${y}`
+                    })()}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const habit = habitsRef.current.find((x) => x.id === h.id)
+                      if (habit)
+                        dispatch('habit_upsert', {
+                          ...habit,
+                          deadline: null,
+                          archived: false,
+                        })
+                    }}
+                    className="shrink-0 rounded p-0.5 text-teal-600 hover:bg-teal-100"
+                    aria-label="Убрать срок"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ) : null}
             </div>
           ))}
+          {habitsEditorSections.inactive.length > 0 && (
+            <div className="space-y-3 pt-2">
+              <h3 className="text-sm font-semibold text-neutral-500">
+                Архив и скрытые
+              </h3>
+              {habitsEditorSections.inactive.map((h) => (
+                <div
+                  key={h.id}
+                  className="rounded-2xl border border-neutral-200 bg-neutral-100/60 px-4 py-3 text-neutral-600"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-lg">{h.emoji}</span>
+                    <span className="min-w-0 flex-1 font-medium text-neutral-700">
+                      {h.name}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        dispatch('habit_upsert', {
+                          ...h,
+                          archived: false,
+                          deadline: null,
+                          postponedUntil: null,
+                        })
+                      }}
+                      className="shrink-0 rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-800"
+                    >
+                      Вернуть
+                    </button>
+                  </div>
+                  <p className="mt-1 text-xs text-neutral-500">
+                    {h.postponedUntil && todayKey < h.postponedUntil
+                      ? `До ${h.postponedUntil} в архиве`
+                      : h.deadline && todayKey > h.deadline
+                        ? `Срок ${h.deadline} истёк`
+                        : h.archived
+                          ? 'В архиве'
+                          : ''}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         <h3 className="mb-3 mt-6 text-base font-semibold text-teal-900">
           Экспорт и импорт
@@ -957,79 +1429,36 @@ export default function App() {
         </div>
       </main>
       ) : (
-      <main className="mx-auto max-w-7xl px-2 py-4 sm:px-3 sm:py-6">
-        {isMobile && (
-          <div className="mb-3 flex items-center justify-center gap-2">
-            <button
-              type="button"
-              onClick={() => moveMobileWeek(-1)}
-              className="rounded-lg bg-teal-700 p-2 text-white shadow hover:bg-teal-800"
-              aria-label="Предыдущая неделя"
-            >
-              <ChevronLeft className="h-5 w-5" />
-            </button>
-            <div className="relative">
-              <button
-                type="button"
-                onClick={openMobileDatePicker}
-                className="rounded-lg border border-teal-300 bg-white px-3 py-2 text-sm font-medium text-teal-900 outline-none focus:ring-2 focus:ring-teal-300"
-              >
-                {mobileWeekRangeLabel}
-              </button>
-              <input
-                ref={mobileWeekPickerRef}
-                type="date"
-                value={selectedDateValue}
-                onChange={(e) => selectDate(e.target.value)}
-                className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
-                aria-label="Выбрать дату недели"
-              />
-            </div>
-            <button
-              type="button"
-              onClick={() => moveMobileWeek(1)}
-              className="rounded-lg bg-teal-700 p-2 text-white shadow hover:bg-teal-800"
-              aria-label="Следующая неделя"
-            >
-              <ChevronRight className="h-5 w-5" />
-            </button>
-          </div>
-        )}
-        {isMobile && (
-          <div className="mb-3 flex rounded-lg bg-teal-100/80 p-0.5 text-sm">
-            <button
-              type="button"
-              onClick={() => setMobileTrackerTab('marks')}
-              className={`flex-1 rounded-md px-3 py-2 font-medium transition ${
-                mobileTrackerTab === 'marks'
-                  ? 'bg-white text-teal-900 shadow'
-                  : 'text-teal-800'
-              }`}
-            >
-              Отметки
-            </button>
-            <button
-              type="button"
-              onClick={() => setMobileTrackerTab('analytics')}
-              className={`flex-1 rounded-md px-3 py-2 font-medium transition ${
-                mobileTrackerTab === 'analytics'
-                  ? 'bg-white text-teal-900 shadow'
-                  : 'text-teal-800'
-              }`}
-            >
-              Динамика и цели
-            </button>
-          </div>
-        )}
+      <main
+        className={`mx-auto max-w-7xl px-2 py-4 sm:px-3 sm:py-6 ${
+          isMobile ? 'pb-28' : ''
+        }`}
+      >
         {(!isMobile || mobileTrackerTab === 'analytics') && (
-        <div className="mb-4 grid gap-4 lg:mb-6 lg:grid-cols-[minmax(0,14rem)_minmax(0,1fr)]">
+        <div
+          className={`mb-4 grid gap-4 lg:mb-6 ${
+            !isMobile ? 'lg:grid-cols-[minmax(0,14rem)_minmax(0,1fr)]' : ''
+          } ${
+            isMobile
+              ? 'rounded-2xl border border-neutral-200/80 bg-white p-3 shadow-sm'
+              : ''
+          }`}
+        >
+          {!isMobile && (
           <div className="min-w-0">
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-teal-700">
               Сегодня
             </p>
             <MiniCalendar />
           </div>
-          <section className="min-w-0 rounded-xl border border-teal-200 bg-white p-3 shadow-sm sm:p-4">
+          )}
+          <section
+            className={`min-w-0 p-3 sm:p-4 ${
+              isMobile
+                ? 'border-0 bg-transparent p-0 shadow-none'
+                : 'rounded-xl border border-teal-200 bg-white shadow-sm'
+            }`}
+          >
             <h2 className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-teal-900">
               <BarChart3 className="h-4 w-4 shrink-0" />
               <span>Динамика: {dynTitle}</span>
@@ -1141,14 +1570,28 @@ export default function App() {
         )}
 
         {habits.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-teal-300 bg-teal-50/80 px-6 py-16 text-center text-teal-800">
+          <div
+            className={`rounded-xl border border-dashed px-6 py-16 text-center ${
+              isMobile
+                ? 'border-neutral-300 bg-white text-neutral-800'
+                : 'border-teal-300 bg-teal-50/80 text-teal-800'
+            }`}
+          >
             <p className="text-lg font-medium">Пока нет привычек</p>
             <p className="mt-2 text-sm opacity-90">
-              Нажмите «Привычка», чтобы добавить первую.
+              {isMobile
+                ? 'Нажмите кнопку «+» внизу.'
+                : 'Нажмите «Привычка», чтобы добавить первую.'}
             </p>
           </div>
         ) : (
-          <div className="flex flex-col gap-0 overflow-hidden rounded-xl border border-teal-200 bg-white shadow-md lg:flex-row">
+          <div
+            className={`flex flex-col gap-0 overflow-hidden lg:flex-row ${
+              isMobile
+                ? 'border-0 bg-transparent shadow-none'
+                : 'rounded-xl border border-teal-200 bg-white shadow-md'
+            }`}
+          >
             {(!isMobile || mobileTrackerTab === 'marks') && (
             <div className="flex min-w-0 flex-1 touch-pan-y items-stretch gap-1">
               <div
@@ -1158,6 +1601,181 @@ export default function App() {
                     : 'overflow-x-auto [-webkit-overflow-scrolling:touch]'
                 }`}
               >
+              {isMobile ? (
+                <div className="space-y-3 px-0.5">
+                  {trackerOrderedHabits.map((h) => {
+                    const goalLabel = h.negative
+                      ? `до ${h.monthlyGoal} срыв./мес.`
+                      : `${h.monthlyGoal} дн. в месяц`
+                    return (
+                      <div
+                        key={h.id}
+                        className="rounded-2xl border border-neutral-200/70 bg-white px-4 py-3 shadow-sm"
+                      >
+                        <div className="mb-3 flex items-start justify-between gap-2">
+                          <div className="flex min-w-0 flex-1 items-center gap-2">
+                            <span className="text-2xl leading-none">{h.emoji}</span>
+                            <div className="min-w-0">
+                              {editingHabitId === h.id ? (
+                                <input
+                                  type="text"
+                                  value={editingName}
+                                  onChange={(e) => setEditingName(e.target.value)}
+                                  className="w-full rounded-lg border border-neutral-300 bg-white px-2 py-1 text-sm font-semibold text-neutral-900 outline-none ring-1 ring-neutral-200"
+                                  autoFocus
+                                  onFocus={(e) => e.target.select()}
+                                  onBlur={commitEditHabitName}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault()
+                                      commitEditHabitName()
+                                    }
+                                    if (e.key === 'Escape') {
+                                      e.preventDefault()
+                                      cancelEditHabitName()
+                                    }
+                                  }}
+                                  onClick={(ev) => ev.stopPropagation()}
+                                />
+                              ) : (
+                                <p
+                                  className="cursor-text truncate text-base font-semibold text-neutral-900"
+                                  onDoubleClick={(ev) => {
+                                    ev.preventDefault()
+                                    setEditingHabitId(h.id)
+                                    setEditingName(h.name)
+                                  }}
+                                >
+                                  {h.name}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 flex-col items-end gap-1">
+                            <span className="text-xs text-neutral-500">
+                              {goalLabel}
+                            </span>
+                            <div
+                              className="relative flex items-center gap-0.5"
+                              data-habit-menu-root
+                            >
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setClockMenuHabitId((id) =>
+                                    id === h.id ? null : h.id,
+                                  )
+                                  setMoreMenuHabitId(null)
+                                }}
+                                className="rounded-lg p-1.5 text-neutral-500 hover:bg-neutral-100 hover:text-teal-700"
+                                aria-label="Срок"
+                              >
+                                <Clock className="h-4 w-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setMoreMenuHabitId((id) =>
+                                    id === h.id ? null : h.id,
+                                  )
+                                  setClockMenuHabitId(null)
+                                }}
+                                className="rounded-lg p-1.5 text-neutral-500 hover:bg-neutral-100 hover:text-teal-700"
+                                aria-label="Ещё"
+                              >
+                                <MoreVertical className="h-4 w-4" />
+                              </button>
+                              {clockMenuHabitId === h.id && (
+                                <div className="absolute right-0 top-full z-40 mt-1 min-w-[12rem] rounded-lg border border-neutral-200 bg-white py-1 shadow-lg">
+                                  <button
+                                    type="button"
+                                    className="block w-full px-3 py-2 text-left text-sm text-neutral-800 hover:bg-neutral-50"
+                                    onClick={(e) =>
+                                      openClockPicker(
+                                        h.id,
+                                        'postpone',
+                                        e.currentTarget,
+                                      )
+                                    }
+                                  >
+                                    Отложить до
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="block w-full px-3 py-2 text-left text-sm text-neutral-800 hover:bg-neutral-50"
+                                    onClick={(e) =>
+                                      openClockPicker(
+                                        h.id,
+                                        'deadline',
+                                        e.currentTarget,
+                                      )
+                                    }
+                                  >
+                                    Соблюдать до
+                                  </button>
+                                </div>
+                              )}
+                              {moreMenuHabitId === h.id && (
+                                <div className="absolute right-8 top-full z-40 mt-1 min-w-[10rem] rounded-lg border border-neutral-200 bg-white py-1 shadow-lg">
+                                  <button
+                                    type="button"
+                                    className="block w-full px-3 py-2 text-left text-sm text-rose-700 hover:bg-rose-50"
+                                    onClick={() => {
+                                      setMoreMenuHabitId(null)
+                                      setDeleteConfirmId(h.id)
+                                    }}
+                                  >
+                                    Удалить
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="block w-full px-3 py-2 text-left text-sm text-neutral-800 hover:bg-neutral-50"
+                                    onClick={() => {
+                                      const habit = habitsRef.current.find(
+                                        (x) => x.id === h.id,
+                                      )
+                                      if (habit)
+                                        dispatch('habit_upsert', {
+                                          ...habit,
+                                          archived: true,
+                                          postponedUntil: null,
+                                        })
+                                      setMoreMenuHabitId(null)
+                                    }}
+                                  >
+                                    В архив
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex justify-between gap-1">
+                          {dayColumns.map((col) => {
+                            const key = col.key
+                            const raw = completions[h.id]?.[key]
+                            return (
+                              <div
+                                key={key}
+                                className="flex min-w-0 flex-1 flex-col items-center gap-1.5"
+                              >
+                                <span className="text-[10px] font-medium text-neutral-400">
+                                  {col.weekday}
+                                </span>
+                                <WeekDot
+                                  habit={h}
+                                  raw={raw}
+                                  onToggle={() => toggleDay(h.id, key)}
+                                />
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
               <table
                 className={`border-collapse text-xs sm:text-sm ${
                   isMobile ? 'w-full table-fixed' : 'w-max min-w-full'
@@ -1200,7 +1818,7 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {orderedHabits.map((h) => (
+                  {trackerOrderedHabits.map((h) => (
                     <tr key={h.id}>
                       <td
                         className={`sticky left-0 z-10 border border-slate-200 px-1.5 py-1 text-xs font-medium sm:max-w-none sm:min-w-[10rem] sm:px-2 sm:text-sm ${
@@ -1250,18 +1868,107 @@ export default function App() {
                               </span>
                             )}
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => setDeleteConfirmId(h.id)}
-                            className={`shrink-0 rounded p-1 ${
-                              h.negative
-                                ? 'text-rose-600 hover:bg-rose-100 hover:text-rose-900'
-                                : 'text-teal-600 hover:bg-teal-100 hover:text-teal-900'
-                            }`}
-                            aria-label="Удалить"
+                          <div
+                            className="relative flex shrink-0 items-center gap-0"
+                            data-habit-menu-root
                           >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setClockMenuHabitId((id) =>
+                                  id === h.id ? null : h.id,
+                                )
+                                setMoreMenuHabitId(null)
+                              }}
+                              className={`rounded p-1 ${
+                                h.negative
+                                  ? 'text-rose-600 hover:bg-rose-100'
+                                  : 'text-teal-600 hover:bg-teal-100'
+                              }`}
+                              aria-label="Срок"
+                            >
+                              <Clock className="h-4 w-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMoreMenuHabitId((id) =>
+                                  id === h.id ? null : h.id,
+                                )
+                                setClockMenuHabitId(null)
+                              }}
+                              className={`rounded p-1 ${
+                                h.negative
+                                  ? 'text-rose-600 hover:bg-rose-100'
+                                  : 'text-teal-600 hover:bg-teal-100'
+                              }`}
+                              aria-label="Ещё"
+                            >
+                              <MoreVertical className="h-4 w-4" />
+                            </button>
+                            {clockMenuHabitId === h.id && (
+                              <div className="absolute bottom-full right-0 z-50 mb-1 min-w-[12rem] rounded-lg border border-teal-200 bg-white py-1 shadow-lg">
+                                <button
+                                  type="button"
+                                  className="block w-full px-3 py-2 text-left text-sm text-teal-900 hover:bg-teal-50"
+                                  onClick={(e) =>
+                                    openClockPicker(
+                                      h.id,
+                                      'postpone',
+                                      e.currentTarget,
+                                    )
+                                  }
+                                >
+                                  Отложить до
+                                </button>
+                                <button
+                                  type="button"
+                                  className="block w-full px-3 py-2 text-left text-sm text-teal-900 hover:bg-teal-50"
+                                  onClick={(e) =>
+                                    openClockPicker(
+                                      h.id,
+                                      'deadline',
+                                      e.currentTarget,
+                                    )
+                                  }
+                                >
+                                  Соблюдать до
+                                </button>
+                              </div>
+                            )}
+                            {moreMenuHabitId === h.id && (
+                              <div className="absolute bottom-full right-6 z-50 mb-1 min-w-[10rem] rounded-lg border border-teal-200 bg-white py-1 shadow-lg">
+                                <button
+                                  type="button"
+                                  className="block w-full px-3 py-2 text-left text-sm text-rose-700 hover:bg-rose-50"
+                                  onClick={() => {
+                                    setMoreMenuHabitId(null)
+                                    setDeleteConfirmId(h.id)
+                                  }}
+                                >
+                                  Удалить
+                                </button>
+                                <button
+                                  type="button"
+                                  className="block w-full px-3 py-2 text-left text-sm text-teal-900 hover:bg-teal-50"
+                                  onClick={() => {
+                                    const habit = habitsRef.current.find(
+                                      (x) => x.id === h.id,
+                                    )
+                                    if (habit)
+                                      dispatch('habit_upsert', {
+                                        ...habit,
+                                        archived: true,
+                                        postponedUntil: null,
+                                      })
+                                    setMoreMenuHabitId(null)
+                                  }}
+                                >
+                                  В архив
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </td>
                       {dayColumns.map(
@@ -1295,96 +2002,192 @@ export default function App() {
                   ))}
                 </tbody>
               </table>
+              )}
               </div>
             </div>
             )}
 
             {(!isMobile || mobileTrackerTab === 'analytics') && (
-            <div className="w-full shrink-0 border-t border-teal-200 bg-teal-50/90 lg:min-w-[21rem] lg:w-[21rem] lg:max-w-none lg:border-l lg:border-t-0">
-              <div className="overflow-x-auto [-webkit-overflow-scrolling:touch]">
-                <div className="min-w-[18.5rem] sm:min-w-[20rem]">
-                  <div className="grid grid-cols-5 gap-x-0.5 border-b border-teal-200 bg-teal-100 px-1.5 py-2 text-[9px] font-semibold uppercase leading-tight tracking-wide text-teal-900 sm:gap-x-1 sm:px-2 sm:text-[10px]">
-                    <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
-                      <Target className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                      <span className="whitespace-nowrap">Цель</span>
-                    </div>
-                    <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
-                      <BarChart3 className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                      <span className="whitespace-nowrap">Прогресс</span>
-                    </div>
-                    <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
-                      <span className="text-xs leading-none" aria-hidden>
-                        Σ
-                      </span>
-                      <span className="whitespace-nowrap">Всего</span>
-                    </div>
-                    <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
-                      <Flame className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                      <span className="whitespace-nowrap">Серия</span>
-                    </div>
-                    <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
-                      <Trophy className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                      <span className="whitespace-nowrap">Рекорд</span>
-                    </div>
-                  </div>
-                  <div className="divide-y divide-teal-200">
-                    {orderedHabits.map((h) => {
-                      const map = completions[h.id]
-                      const goal = h.monthlyGoal
-                      const done = h.negative
-                        ? slipCountInMonth(map, y, m0)
-                        : totalSuccessInMonth(h, map, y, m0)
-                      const pct = h.negative
-                        ? done === 0
-                          ? 100
-                          : Math.max(
-                              0,
-                              Math.round(
-                                ((goal - done) / Math.max(1, goal)) * 1000,
-                              ) / 10,
-                            )
-                        : progressPercent(done, goal)
-                      const cur = currentStreakEndingAt(h, map, y, m0, today)
-                      const lon = longestStreakInMonth(h, map, y, m0)
-                      const bar = Math.min(100, pct)
-                      return (
-                        <div
-                          key={h.id}
-                          className={`flex flex-col gap-2 px-1.5 py-2 text-xs sm:px-2 ${rowStyle(h)} text-teal-900`}
-                        >
-                          <div className="truncate text-[11px] font-medium">
-                            {h.emoji} {h.name}
+            <div
+              className={`w-full shrink-0 lg:min-w-[21rem] lg:w-[21rem] lg:max-w-none ${
+                isMobile
+                  ? 'border-0 bg-transparent'
+                  : 'border-t border-teal-200 bg-teal-50/90 lg:border-l lg:border-t-0'
+              }`}
+            >
+              <div
+                className={
+                  isMobile
+                    ? ''
+                    : 'overflow-x-auto [-webkit-overflow-scrolling:touch]'
+                }
+              >
+                <div
+                  className={isMobile ? '' : 'min-w-[18.5rem] sm:min-w-[20rem]'}
+                >
+                  {isMobile ? (
+                    <div className="space-y-3">
+                      {trackerOrderedHabits.map((h) => {
+                        const map = completions[h.id]
+                        const goal = h.monthlyGoal
+                        const done = h.negative
+                          ? slipCountInMonth(map, y, m0)
+                          : totalSuccessInMonth(h, map, y, m0)
+                        const pct = h.negative
+                          ? done === 0
+                            ? 100
+                            : Math.max(
+                                0,
+                                Math.round(
+                                  ((goal - done) / Math.max(1, goal)) * 1000,
+                                ) / 10,
+                              )
+                          : progressPercent(done, goal)
+                        const cur = currentStreakEndingAt(h, map, y, m0, today)
+                        const lon = longestStreakInMonth(h, map, y, m0)
+                        const bar = Math.min(100, pct)
+                        return (
+                          <div
+                            key={h.id}
+                            className="rounded-2xl border border-teal-100 bg-white px-4 py-3 shadow-sm"
+                          >
+                            <div className="mb-3 flex items-center gap-2">
+                              <span className="text-2xl leading-none">{h.emoji}</span>
+                              <span className="min-w-0 truncate text-base font-semibold text-teal-950">
+                                {h.name}
+                              </span>
+                            </div>
+                            <div className="mb-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs text-teal-900">
+                              <div className="flex items-center justify-between gap-2 rounded-lg bg-teal-50/80 px-2 py-1.5">
+                                <span className="text-teal-600">Цель</span>
+                                <span className="font-semibold tabular-nums">
+                                  {goal}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between gap-2 rounded-lg bg-teal-50/80 px-2 py-1.5">
+                                <span className="text-teal-600">Прогресс</span>
+                                <span className="font-semibold tabular-nums">
+                                  {pct}%
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between gap-2 rounded-lg bg-teal-50/80 px-2 py-1.5">
+                                <span className="text-teal-600">Всего</span>
+                                <span className="font-semibold tabular-nums">
+                                  {done}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between gap-2 rounded-lg bg-teal-50/80 px-2 py-1.5">
+                                <span className="text-teal-600">Серия</span>
+                                <span className="font-semibold tabular-nums">
+                                  {cur}
+                                </span>
+                              </div>
+                              <div className="col-span-2 flex items-center justify-between gap-2 rounded-lg bg-teal-50/80 px-2 py-1.5">
+                                <span className="text-teal-600">Рекорд</span>
+                                <span className="font-semibold tabular-nums">
+                                  {lon}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="h-2 w-full overflow-hidden rounded-full bg-emerald-100 ring-1 ring-emerald-200/60">
+                              <div
+                                className="h-full rounded-full bg-emerald-500 transition-all"
+                                style={{
+                                  width: `${bar}%`,
+                                  minWidth: bar > 0 ? '2px' : undefined,
+                                }}
+                              />
+                            </div>
                           </div>
-                          <div className="grid grid-cols-5 gap-x-0.5 sm:gap-x-1">
-                            <div className="min-w-0 text-center tabular-nums">
-                              {goal}
-                            </div>
-                            <div className="min-w-0 text-center font-semibold tabular-nums">
-                              {pct}%
-                            </div>
-                            <div className="min-w-0 text-center tabular-nums">
-                              {done}
-                            </div>
-                            <div className="min-w-0 text-center tabular-nums">
-                              {cur}
-                            </div>
-                            <div className="min-w-0 text-center tabular-nums">
-                              {lon}
-                            </div>
-                          </div>
-                          <div className="h-2 w-full shrink-0 overflow-hidden rounded-full bg-emerald-100 ring-1 ring-emerald-200/60">
-                            <div
-                              className="h-full rounded-full bg-emerald-500 transition-all"
-                              style={{
-                                width: `${bar}%`,
-                                minWidth: bar > 0 ? '2px' : undefined,
-                              }}
-                            />
-                          </div>
+                        )
+                      })}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-5 gap-x-0.5 border-b border-teal-200 bg-teal-100 px-1.5 py-2 text-[9px] font-semibold uppercase leading-tight tracking-wide text-teal-900 sm:gap-x-1 sm:px-2 sm:text-[10px]">
+                        <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
+                          <Target className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                          <span className="whitespace-nowrap">Цель</span>
                         </div>
-                      )
-                    })}
-                  </div>
+                        <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
+                          <BarChart3 className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                          <span className="whitespace-nowrap">Прогресс</span>
+                        </div>
+                        <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
+                          <span className="text-xs leading-none" aria-hidden>
+                            Σ
+                          </span>
+                          <span className="whitespace-nowrap">Всего</span>
+                        </div>
+                        <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
+                          <Flame className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                          <span className="whitespace-nowrap">Серия</span>
+                        </div>
+                        <div className="flex min-w-0 flex-col items-center justify-center gap-0.5 text-center">
+                          <Trophy className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                          <span className="whitespace-nowrap">Рекорд</span>
+                        </div>
+                      </div>
+                      <div className="divide-y divide-teal-200">
+                        {trackerOrderedHabits.map((h) => {
+                          const map = completions[h.id]
+                          const goal = h.monthlyGoal
+                          const done = h.negative
+                            ? slipCountInMonth(map, y, m0)
+                            : totalSuccessInMonth(h, map, y, m0)
+                          const pct = h.negative
+                            ? done === 0
+                              ? 100
+                              : Math.max(
+                                  0,
+                                  Math.round(
+                                    ((goal - done) / Math.max(1, goal)) * 1000,
+                                  ) / 10,
+                                )
+                            : progressPercent(done, goal)
+                          const cur = currentStreakEndingAt(h, map, y, m0, today)
+                          const lon = longestStreakInMonth(h, map, y, m0)
+                          const bar = Math.min(100, pct)
+                          return (
+                            <div
+                              key={h.id}
+                              className={`flex flex-col gap-2 px-1.5 py-2 text-xs sm:px-2 ${rowStyle(h)} text-teal-900`}
+                            >
+                              <div className="truncate text-[11px] font-medium">
+                                {h.emoji} {h.name}
+                              </div>
+                              <div className="grid grid-cols-5 gap-x-0.5 sm:gap-x-1">
+                                <div className="min-w-0 text-center tabular-nums">
+                                  {goal}
+                                </div>
+                                <div className="min-w-0 text-center font-semibold tabular-nums">
+                                  {pct}%
+                                </div>
+                                <div className="min-w-0 text-center tabular-nums">
+                                  {done}
+                                </div>
+                                <div className="min-w-0 text-center tabular-nums">
+                                  {cur}
+                                </div>
+                                <div className="min-w-0 text-center tabular-nums">
+                                  {lon}
+                                </div>
+                              </div>
+                              <div className="h-2 w-full shrink-0 overflow-hidden rounded-full bg-emerald-100 ring-1 ring-emerald-200/60">
+                                <div
+                                  className="h-full rounded-full bg-emerald-500 transition-all"
+                                  style={{
+                                    width: `${bar}%`,
+                                    minWidth: bar > 0 ? '2px' : undefined,
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -1394,7 +2197,7 @@ export default function App() {
       </main>
       )}
 
-      {screen === 'tracker' && (
+      {screen === 'tracker' && !isMobile && (
         <button
           type="button"
           onClick={() => setModal(true)}
@@ -1405,9 +2208,157 @@ export default function App() {
         </button>
       )}
 
+      {isMobile && (
+        <>
+          {authMenuOpen && session?.user && (
+            <button
+              type="button"
+              className="fixed inset-0 z-[90] bg-black/30"
+              aria-label="Закрыть меню"
+              onClick={() => setAuthMenuOpen(false)}
+            />
+          )}
+          {authMenuOpen && session?.user && (
+            <div className="fixed inset-x-3 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-[110] mx-auto max-w-sm rounded-2xl border border-teal-200 bg-white p-4 shadow-2xl">
+              <p className="mb-3 truncate text-sm font-medium text-teal-900">
+                {profileName}
+              </p>
+              <button
+                type="button"
+                disabled={!supabase}
+                onClick={async () => {
+                  setAuthMenuOpen(false)
+                  setAuthErr(null)
+                  setAuthInfo(null)
+                  if (!supabase) return
+                  await supabase.auth.signOut()
+                }}
+                className="w-full rounded-xl bg-teal-700 py-3 text-sm font-medium text-white hover:bg-teal-800 disabled:opacity-50"
+              >
+                Выйти
+              </button>
+            </div>
+          )}
+          <nav
+            className="fixed bottom-0 left-0 right-0 z-[100] pointer-events-none"
+            aria-label="Основная навигация"
+          >
+            <div className="pointer-events-auto px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1">
+              <div className="relative mx-auto h-[4.5rem] max-w-md">
+                <svg
+                  className="absolute inset-0 h-full w-full text-teal-800 drop-shadow-[0_-6px_24px_rgba(15,118,110,0.2)]"
+                  viewBox="0 0 400 80"
+                  preserveAspectRatio="none"
+                  aria-hidden
+                >
+                  <path
+                    fill="currentColor"
+                    d="M0,80 L0,40 C0,18 16,0 38,0 L158,0 Q200,-30 242,0 L362,0 C384,0 400,18 400,40 L400,80 Z"
+                  />
+                </svg>
+                <div className="relative z-10 grid h-full grid-cols-5 items-end gap-0 px-0.5 pb-2.5 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setScreen('tracker')
+                      setMobileTrackerTab('marks')
+                    }}
+                    className={`flex flex-col items-center justify-end gap-1 pb-0.5 outline-none focus-visible:ring-2 focus-visible:ring-teal-300/80 ${
+                      screen === 'tracker' && mobileTrackerTab === 'marks'
+                        ? 'text-white'
+                        : 'text-teal-200/85'
+                    }`}
+                    aria-current={
+                      screen === 'tracker' && mobileTrackerTab === 'marks'
+                        ? 'page'
+                        : undefined
+                    }
+                    aria-label="Трекер"
+                  >
+                    <LayoutGrid className="h-6 w-6" strokeWidth={1.75} />
+                    {screen === 'tracker' && mobileTrackerTab === 'marks' && (
+                      <span className="h-0.5 w-5 rounded-full bg-white" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setScreen('habits')}
+                    className={`flex flex-col items-center justify-end gap-1 pb-0.5 outline-none focus-visible:ring-2 focus-visible:ring-teal-300/80 ${
+                      screen === 'habits' ? 'text-white' : 'text-teal-200/85'
+                    }`}
+                    aria-current={screen === 'habits' ? 'page' : undefined}
+                    aria-label="Список привычек"
+                  >
+                    <List className="h-6 w-6" strokeWidth={1.75} />
+                    {screen === 'habits' && (
+                      <span className="h-0.5 w-5 rounded-full bg-white" />
+                    )}
+                  </button>
+                  <div className="relative flex min-h-[2.75rem] items-end justify-center">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMenuOpen(false)
+                        setModal(true)
+                      }}
+                      className="absolute left-1/2 top-0 z-10 flex h-[3.35rem] w-[3.35rem] -translate-x-1/2 -translate-y-[42%] items-center justify-center rounded-full bg-teal-500 text-white shadow-[0_4px_14px_rgba(15,118,110,0.45)] ring-4 ring-[#f9f9f9] transition active:scale-95 outline-none focus-visible:ring-2 focus-visible:ring-teal-300"
+                      aria-label="Добавить привычку"
+                    >
+                      <Plus className="h-7 w-7" strokeWidth={2.75} />
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!session?.user) setAuthModalOpen(true)
+                      else setAuthMenuOpen((v) => !v)
+                    }}
+                    className={`flex flex-col items-center justify-end gap-1 pb-0.5 outline-none focus-visible:ring-2 focus-visible:ring-teal-300/80 ${
+                      authMenuOpen && session?.user
+                        ? 'text-white'
+                        : 'text-teal-200/85'
+                    }`}
+                    aria-label="Профиль"
+                  >
+                    <User className="h-6 w-6" strokeWidth={1.75} />
+                    {authMenuOpen && session?.user && (
+                      <span className="h-0.5 w-5 rounded-full bg-white" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setScreen('tracker')
+                      setMobileTrackerTab('analytics')
+                    }}
+                    className={`flex flex-col items-center justify-end gap-1 pb-0.5 outline-none focus-visible:ring-2 focus-visible:ring-teal-300/80 ${
+                      screen === 'tracker' && mobileTrackerTab === 'analytics'
+                        ? 'text-white'
+                        : 'text-teal-200/85'
+                    }`}
+                    aria-current={
+                      screen === 'tracker' && mobileTrackerTab === 'analytics'
+                        ? 'page'
+                        : undefined
+                    }
+                    aria-label="Статистика"
+                  >
+                    <BarChart3 className="h-6 w-6" strokeWidth={1.75} />
+                    {screen === 'tracker' &&
+                      mobileTrackerTab === 'analytics' && (
+                        <span className="h-0.5 w-5 rounded-full bg-white" />
+                      )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </nav>
+        </>
+      )}
+
       {authModalOpen && (
         <div
-          className="fixed inset-0 z-[55] flex items-center justify-center bg-black/40 p-4"
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 p-4"
           onClick={() => setAuthModalOpen(false)}
         >
           <div
@@ -1514,7 +2465,7 @@ export default function App() {
       )}
 
       {modal && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-0 sm:items-center sm:p-4">
+        <div className="fixed inset-0 z-[120] flex items-end justify-center bg-black/40 p-0 sm:items-center sm:p-4">
           <div
             role="dialog"
             className="max-h-[min(92dvh,100vh-env(safe-area-inset-bottom))] w-full max-w-lg overflow-y-auto rounded-t-2xl border border-teal-200 bg-white p-4 shadow-2xl sm:max-h-[85vh] sm:rounded-2xl sm:p-6"
@@ -1570,6 +2521,15 @@ export default function App() {
                 className="mt-1 w-full rounded-lg border border-teal-200 px-3 py-2 outline-none focus:ring-2 focus:ring-teal-400"
               />
             </label>
+            <label className="mb-4 block text-sm font-medium text-teal-800">
+              Соблюдать до (окончание цикла)
+              <input
+                type="date"
+                value={formDeadline}
+                onChange={(e) => setFormDeadline(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-teal-200 px-3 py-2 outline-none focus:ring-2 focus:ring-teal-400"
+              />
+            </label>
             <label className="mb-6 flex cursor-pointer items-center gap-2 text-sm text-teal-900">
               <input
                 type="checkbox"
@@ -1601,7 +2561,7 @@ export default function App() {
 
       {deleteConfirmId && (
         <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4"
+          className="fixed inset-0 z-[125] flex items-center justify-center bg-black/40 p-4"
           onClick={() => setDeleteConfirmId(null)}
         >
           <div
@@ -1649,6 +2609,16 @@ export default function App() {
           </div>
         </div>
       )}
+      <input
+        ref={clockDateRef}
+        type="date"
+        className="pointer-events-auto fixed z-[200] h-px w-px opacity-0"
+        aria-hidden
+        onChange={(e) => {
+          applyClockDate(e.target.value)
+          e.target.value = ''
+        }}
+      />
     </div>
   )
 }

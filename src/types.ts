@@ -4,6 +4,9 @@ export type Habit = {
   emoji: string
   negative: boolean
   monthlyGoal: number
+  archived?: boolean
+  deadline?: string | null
+  postponedUntil?: string | null
 }
 
 export type Completions = Record<string, Record<string, boolean>>

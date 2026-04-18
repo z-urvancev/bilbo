@@ -25,6 +25,9 @@ type DbHabitRow = {
   emoji: string
   negative: boolean
   monthly_goal: number
+  archived?: boolean
+  deadline?: string | null
+  postponed_until?: string | null
 }
 
 type DbMarkRow = {
@@ -40,6 +43,9 @@ function habitFromRow(r: DbHabitRow): Habit {
     emoji: r.emoji,
     negative: r.negative,
     monthlyGoal: r.monthly_goal,
+    archived: r.archived ?? false,
+    deadline: r.deadline ?? null,
+    postponedUntil: r.postponed_until ?? null,
   }
 }
 
@@ -56,7 +62,9 @@ async function legacyPullPersisted(userId: string): Promise<Persisted | null> {
   if (!supabase) return null
   const { data: hRows, error: e1 } = await supabase
     .from('habits')
-    .select('id, user_id, name, emoji, negative, monthly_goal')
+    .select(
+      'id, user_id, name, emoji, negative, monthly_goal, archived, deadline, postponed_until',
+    )
     .eq('user_id', userId)
   if (e1) {
     const code = (e1 as { code?: string }).code
