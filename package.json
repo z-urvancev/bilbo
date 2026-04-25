@@ -7,13 +7,16 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "bot:dev": "node --env-file=.env scripts/telegram-bot.mjs",
+    "bot:start": "node scripts/telegram-bot.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.103.3",
     "lucide-react": "^1.8.0",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "telegraf": "^4.16.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
