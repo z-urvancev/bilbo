@@ -568,14 +568,16 @@ bot.start((ctx) => {
 /checklist — кнопки для отметок
 /daily_export — ежедневная выгрузка за сегодня
 /month — выполнение за последние 30 дней
-/advice — персональная рекомендация от LLM`,
+/advice — персональная рекомендация от LLM
+
+Сайт: https://z-urvancev.github.io/bilbo/`,
     mainMenuKeyboard()
   );
 });
 
 bot.help((ctx) => {
   return ctx.reply(
-    "Команды:\n/start\n/help\n/login\n/logout\n/habits\n/checklist\n/daily_export\n/month\n/advice",
+    "Команды:\n/start\n/help\n/login\n/logout\n/habits\n/checklist\n/daily_export\n/month\n/advice\n\nСайт: https://z-urvancev.github.io/bilbo/",
     mainMenuKeyboard()
   );
 });
@@ -766,9 +768,18 @@ bot.catch((err) => {
   console.error("Telegram bot error:", err);
 });
 
-bot.launch().then(() => {
-  console.log("Telegram bot started in long polling mode");
-});
+bot
+  .launch()
+  .then(async () => {
+    await bot.telegram.setMyDescription(
+      "Бот календаря привычек: отметки, выгрузки и персональные советы.\nСайт: https://z-urvancev.github.io/bilbo/"
+    );
+    await bot.telegram.setMyShortDescription("Календарь привычек + советы LLM");
+    console.log("Telegram bot started in long polling mode");
+  })
+  .catch((error) => {
+    console.error("Telegram bot launch error:", error);
+  });
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
