@@ -7,6 +7,13 @@ const supabaseUrl = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL;
 const supabaseAnonKey =
   process.env.SUPABASE_ANON_KEY ?? process.env.VITE_SUPABASE_ANON_KEY;
 const dailyExportTime = process.env.TELEGRAM_DAILY_EXPORT_TIME ?? "";
+const openRouterApiKey = process.env.OPENROUTER_API_KEY ?? "";
+const openRouterModel =
+  process.env.OPENROUTER_MODEL ?? "meta-llama/llama-3.3-8b-instruct:free";
+const openRouterApiUrl =
+  process.env.OPENROUTER_API_URL ??
+  "https://openrouter.ai/api/v1/chat/completions";
+const llmTone = process.env.LLM_TONE ?? "мягкий";
 
 if (!token) {
   console.error("Missing TELEGRAM_BOT_TOKEN in environment");
@@ -94,6 +101,129 @@ function buildMonthStatsText(state, dayKeys) {
     "",
     "Если цифры ниже, чем хочется, начни с одной привычки и маленького шага на этой неделе.",
   ].join("\n");
+}
+
+function buildAdviceStats(state, dayKeys) {
+  const todayKey = dayKeys[dayKeys.length - 1];
+  const habits = state.habits.filter((h) => !habitHidden(h, todayKey));
+  const good = habits.filter((h) => !h.negative);
+  const negative = habits.filter((h) => h.negative);
+  const recentWindow = dayKeys.slice(-7);
+  const previousWindow = dayKeys.slice(-14, -7);
+  const toStat = (h) => {
+    const done = countMarkedDays(h.id, state.completions, dayKeys);
+    const missed = Math.max(dayKeys.length - done, 0);
+    const recentDone = countMarkedDays(h.id, state.completions, recentWindow);
+    const previousDone = countMarkedDays(h.id, state.completions, previousWindow);
+    const trend = recentDone - previousDone;
+    const pct = dayKeys.length > 0 ? Math.round((done / dayKeys.length) * 100) : 0;
+    return { name: h.name, emoji: h.emoji, done, missed, pct, recentDone, previousDone, trend };
+  };
+  const goodStats = good.map(toStat).sort((a, b) => b.pct - a.pct);
+  const negativeStats = negative.map(toStat).sort((a, b) => b.pct - a.pct);
+  return {
+    periodDays: dayKeys.length,
+    fromKey: dayKeys[0],
+    toKey: dayKeys[dayKeys.length - 1],
+    goodStats,
+    negativeStats,
+  };
+}
+
+function buildAdvicePrompt(stats) {
+  const goodLines =
+    stats.goodStats.length === 0
+      ? "нет"
+      : stats.goodStats
+          .map(
+            (s) =>
+              `${s.emoji} ${s.name}: отметки ${s.done}/${stats.periodDays} (${s.pct}%), пропуски ${s.missed}, последние 7 дней ${s.recentDone}, прошлые 7 дней ${s.previousDone}, тренд ${s.trend >= 0 ? "+" : ""}${s.trend}`
+          )
+          .join("\n");
+  const negativeLines =
+    stats.negativeStats.length === 0
+      ? "нет"
+      : stats.negativeStats
+          .map(
+            (s) =>
+              `${s.emoji} ${s.name}: срывы/отметки ${s.done}/${stats.periodDays} (${s.pct}%), дни без срыва ${s.missed}, последние 7 дней ${s.recentDone}, прошлые 7 дней ${s.previousDone}, тренд ${s.trend >= 0 ? "+" : ""}${s.trend}`
+          )
+          .join("\n");
+  return [
+    "Ты ассистент по привычкам.",
+    `Тон: ${llmTone}.`,
+    "Пиши по-русски, коротко и человечно.",
+    "Ответ: 5-8 строк, без воды, без морализаторства, без медицинских рекомендаций.",
+    "Структура: 1 строка похвалы/поддержки, 1-2 наблюдения, 2 конкретных шага на завтра.",
+    "Для негативных привычек трактуй более высокий процент как более частые срывы.",
+    "Обязательно учитывай и отмеченные дни, и пропуски, и тренд последних 7 дней против предыдущих 7 дней.",
+    `Период: ${formatDayKeyRu(stats.fromKey)} - ${formatDayKeyRu(stats.toKey)} (${stats.periodDays} дней).`,
+    "Хорошие привычки:",
+    goodLines,
+    "Негативные привычки:",
+    negativeLines,
+  ].join("\n");
+}
+
+async function generateAdviceText(stats) {
+  if (!openRouterApiKey) {
+    return "LLM пока не настроена. Добавь OPENROUTER_API_KEY и перезапусти бота.";
+  }
+  const prompt = buildAdvicePrompt(stats);
+  const body = {
+    model: openRouterModel,
+    messages: [
+      {
+        role: "system",
+        content: "Ты коуч привычек. Ответ всегда на русском языке.",
+      },
+      { role: "user", content: prompt },
+    ],
+    temperature: 0.7,
+  };
+  const response = await fetch(openRouterApiUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${openRouterApiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`OpenRouter HTTP ${response.status}: ${text}`);
+  }
+  const data = await response.json();
+  const text = data?.choices?.[0]?.message?.content?.trim();
+  if (!text) throw new Error("OpenRouter returned empty response");
+  return text;
+}
+
+function buildAdviceFallback(stats) {
+  const periodDays = stats.periodDays;
+  const bestGood = stats.goodStats[0];
+  const worstGood = stats.goodStats[stats.goodStats.length - 1];
+  const worstNegative = stats.negativeStats[0];
+  const lines = [];
+  lines.push(`За ${periodDays} дней у тебя уже есть движение вперед, это важно.`);
+  if (bestGood) {
+    lines.push(
+      `Сильная сторона: ${bestGood.emoji} ${bestGood.name} — ${bestGood.done}/${periodDays} (${bestGood.pct}%), пропуски ${bestGood.missed}.`
+    );
+  }
+  if (worstGood) {
+    lines.push(
+      `Зона роста: ${worstGood.emoji} ${worstGood.name} — ${worstGood.done}/${periodDays} (${worstGood.pct}%), пропуски ${worstGood.missed}.`
+    );
+  }
+  if (worstNegative) {
+    lines.push(
+      `Обрати внимание: ${worstNegative.emoji} ${worstNegative.name} — срывы ${worstNegative.done}/${periodDays} (${worstNegative.pct}%), без срывов ${worstNegative.missed}.`
+    );
+  }
+  lines.push("Шаг на завтра: выбери одну полезную привычку и закрепи ее в конкретное время.");
+  lines.push("Шаг на завтра: для одной негативной привычки подготовь заранее замену действию.");
+  return lines.join("\n");
 }
 
 async function replyLong(ctx, text) {
@@ -335,13 +465,14 @@ bot.start((ctx) => {
 /habits — посмотреть привычки на сегодня
 /checklist — кнопки для отметок
 /daily_export — ежедневная выгрузка за сегодня
-/month — выполнение за последние 30 дней`
+/month — выполнение за последние 30 дней
+/advice — персональная рекомендация от LLM`
   );
 });
 
 bot.help((ctx) => {
   return ctx.reply(
-    "Команды:\n/start\n/help\n/login\n/logout\n/habits\n/checklist\n/daily_export\n/month"
+    "Команды:\n/start\n/help\n/login\n/logout\n/habits\n/checklist\n/daily_export\n/month\n/advice"
   );
 });
 
@@ -407,6 +538,25 @@ bot.command("month", async (ctx) => {
     const state = await loadState(client, user.id);
     const dayKeys = rollingDayKeysEndingToday(30);
     await replyLong(ctx, buildMonthStatsText(state, dayKeys));
+  });
+});
+
+bot.command("advice", async (ctx) => {
+  await withAuth(ctx, async ({ client, user }) => {
+    const state = await loadState(client, user.id);
+    const dayKeys = rollingDayKeysEndingToday(30);
+    const stats = buildAdviceStats(state, dayKeys);
+    if (stats.goodStats.length === 0 && stats.negativeStats.length === 0) {
+      await ctx.reply("Пока нет активных привычек для анализа. Добавь хотя бы одну в приложении.");
+      return;
+    }
+    try {
+      const text = await generateAdviceText(stats);
+      await replyLong(ctx, text);
+    } catch (error) {
+      console.error("Advice generation error:", error);
+      await replyLong(ctx, buildAdviceFallback(stats));
+    }
   });
 });
 
