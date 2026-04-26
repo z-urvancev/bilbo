@@ -31,6 +31,15 @@ const bot = new Telegraf(token);
 const sessions = new Map();
 const pendingLogins = new Map();
 const lastDailyExportByChat = new Map();
+const mainMenuButtons = [
+  ["/checklist", "/habits"],
+  ["/daily_export", "/advice"],
+  ["/month", "/help"],
+];
+
+function mainMenuKeyboard() {
+  return Markup.keyboard(mainMenuButtons).resize();
+}
 
 function dateKeyNow() {
   const d = new Date();
@@ -280,6 +289,13 @@ async function replyLong(ctx, text) {
   }
 }
 
+async function sendLongMessageToChat(chatId, text) {
+  const max = 3900;
+  for (let i = 0; i < text.length; i += max) {
+    await bot.telegram.sendMessage(chatId, text.slice(i, i + max));
+  }
+}
+
 async function createUserClient(session) {
   const client = createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
@@ -493,12 +509,43 @@ async function sendChecklist(ctx, client, user, dayKey) {
 
 async function sendDailyExport(ctx, client, user, dayKey) {
   const state = await loadState(client, user.id);
-  await ctx.reply(buildDailyExportText(state, dayKey));
+  const exportText = buildDailyExportText(state, dayKey);
+  const dayKeys = rollingDayKeysEndingToday(30);
+  const stats = buildAdviceStats(state, dayKeys);
+  if (stats.goodStats.length === 0 && stats.negativeStats.length === 0) {
+    await ctx.reply(exportText, mainMenuKeyboard());
+    return;
+  }
+  let adviceText = "";
+  try {
+    adviceText = await generateAdviceText(stats);
+  } catch (error) {
+    console.error("Advice generation error:", error);
+    adviceText = buildAdviceFallback(stats);
+  }
+  await replyLong(ctx, `${exportText}\n\nПерсональный совет:\n${adviceText}`);
 }
 
 async function sendDailyExportToChat(chatId, client, user, dayKey) {
   const state = await loadState(client, user.id);
-  await bot.telegram.sendMessage(chatId, buildDailyExportText(state, dayKey));
+  const exportText = buildDailyExportText(state, dayKey);
+  const dayKeys = rollingDayKeysEndingToday(30);
+  const stats = buildAdviceStats(state, dayKeys);
+  if (stats.goodStats.length === 0 && stats.negativeStats.length === 0) {
+    await bot.telegram.sendMessage(chatId, exportText);
+    return;
+  }
+  let adviceText = "";
+  try {
+    adviceText = await generateAdviceText(stats);
+  } catch (error) {
+    console.error("Advice generation error:", error);
+    adviceText = buildAdviceFallback(stats);
+  }
+  await sendLongMessageToChat(
+    chatId,
+    `${exportText}\n\nПерсональный совет:\n${adviceText}`
+  );
 }
 
 bot.start((ctx) => {
@@ -513,13 +560,15 @@ bot.start((ctx) => {
 /checklist — кнопки для отметок
 /daily_export — ежедневная выгрузка за сегодня
 /month — выполнение за последние 30 дней
-/advice — персональная рекомендация от LLM`
+/advice — персональная рекомендация от LLM`,
+    mainMenuKeyboard()
   );
 });
 
 bot.help((ctx) => {
   return ctx.reply(
-    "Команды:\n/start\n/help\n/login\n/logout\n/habits\n/checklist\n/daily_export\n/month\n/advice"
+    "Команды:\n/start\n/help\n/login\n/logout\n/habits\n/checklist\n/daily_export\n/month\n/advice",
+    mainMenuKeyboard()
   );
 });
 
@@ -546,11 +595,11 @@ bot.command("login", async (ctx) => {
       email,
     });
     pendingLogins.delete(chatId);
-    await ctx.reply(`Вход выполнен: ${email}`);
+    await ctx.reply(`Вход выполнен: ${email}`, mainMenuKeyboard());
     return;
   }
   pendingLogins.set(chatId, { step: "email" });
-  await ctx.reply("Введи email отдельным сообщением.");
+  await ctx.reply("Введи email отдельным сообщением.", mainMenuKeyboard());
 });
 
 bot.command("logout", async (ctx) => {
@@ -558,7 +607,7 @@ bot.command("logout", async (ctx) => {
   if (!chatId) return;
   sessions.delete(chatId);
   pendingLogins.delete(chatId);
-  await ctx.reply("Ты вышел из аккаунта.");
+  await ctx.reply("Ты вышел из аккаунта.", mainMenuKeyboard());
 });
 
 bot.command("habits", async (ctx) => {
@@ -639,7 +688,7 @@ bot.on("text", async (ctx) => {
       email: flow.email,
     });
     pendingLogins.delete(chatId);
-    await ctx.reply(`Вход выполнен: ${flow.email}`);
+    await ctx.reply(`Вход выполнен: ${flow.email}`, mainMenuKeyboard());
   }
 });
 
