@@ -130,6 +130,35 @@ function buildAdviceStats(state, dayKeys) {
   };
 }
 
+function getHabitActionTip(name, negative) {
+  const n = name.toLowerCase();
+  if (!negative) {
+    if (/(чтен|книг)/.test(n)) {
+      return "Положи книгу на видное место и зафиксируй 10 минут чтения сразу после ужина.";
+    }
+    if (/(встав|подъем|просып|сон)/.test(n)) {
+      return "Подготовь вечерний ритуал заранее: убери телефон за 30 минут до сна и поставь будильник подальше от кровати.";
+    }
+    if (/(цифров|телефон|соцсет|экран)/.test(n)) {
+      return "Сделай один безэкранный блок на 25 минут и включи режим фокус прямо перед ним.";
+    }
+    if (/(спорт|трен|бег|ходьб|зарядк)/.test(n)) {
+      return "Снизь порог входа: минимум 5 минут движения в одно и то же время каждый день.";
+    }
+    return "Привяжи привычку к стабильному триггеру дня и начни с минимального шага на 5-10 минут.";
+  }
+  if (/(энергет|кофе|кофеин)/.test(n)) {
+    return "Подготовь замену заранее: вода + короткая прогулка на 5 минут в момент тяги к энергетикам.";
+  }
+  if (/(сладк|фастфуд|джанк)/.test(n)) {
+    return "Убери быстрый доступ к триггеру и подготовь более безопасный перекус заранее.";
+  }
+  if (/(курен|сигар|вейп|никотин)/.test(n)) {
+    return "В момент триггера делай паузу 3 минуты и переключайся на заранее выбранное действие-замену.";
+  }
+  return "Определи главный триггер срыва и заранее подготовь одну конкретную замену этому действию.";
+}
+
 function buildAdvicePrompt(stats) {
   const goodLines =
     stats.goodStats.length === 0
@@ -154,9 +183,11 @@ function buildAdvicePrompt(stats) {
     `Тон: ${llmTone}.`,
     "Пиши по-русски, коротко и человечно.",
     "Ответ: 5-8 строк, без воды, без морализаторства, без медицинских рекомендаций.",
-    "Структура: 1 строка похвалы/поддержки, 1-2 наблюдения, 2 конкретных шага на завтра.",
+    "Структура: 1 строка похвалы/поддержки, 1-2 наблюдения, 2-3 конкретных шага на завтра.",
     "Для негативных привычек трактуй более высокий процент как более частые срывы.",
     "Обязательно учитывай и отмеченные дни, и пропуски, и тренд последних 7 дней против предыдущих 7 дней.",
+    "Пропуски считаются только внутри этого периода до сегодняшнего дня.",
+    "Дай персональные советы по названиям привычек, а не общие фразы.",
     `Период: ${formatDayKeyRu(stats.fromKey)} - ${formatDayKeyRu(stats.toKey)} (${stats.periodDays} дней).`,
     "Хорошие привычки:",
     goodLines,
@@ -205,7 +236,9 @@ function buildAdviceFallback(stats) {
   const worstGood = stats.goodStats[stats.goodStats.length - 1];
   const worstNegative = stats.negativeStats[0];
   const lines = [];
-  lines.push(`За ${periodDays} дней у тебя уже есть движение вперед, это важно.`);
+  lines.push(
+    `За ${periodDays} дней до сегодняшнего дня у тебя уже есть движение вперед, это важно.`
+  );
   if (bestGood) {
     lines.push(
       `Сильная сторона: ${bestGood.emoji} ${bestGood.name} — ${bestGood.done}/${periodDays} (${bestGood.pct}%), пропуски ${bestGood.missed}.`
@@ -221,8 +254,22 @@ function buildAdviceFallback(stats) {
       `Обрати внимание: ${worstNegative.emoji} ${worstNegative.name} — срывы ${worstNegative.done}/${periodDays} (${worstNegative.pct}%), без срывов ${worstNegative.missed}.`
     );
   }
-  lines.push("Шаг на завтра: выбери одну полезную привычку и закрепи ее в конкретное время.");
-  lines.push("Шаг на завтра: для одной негативной привычки подготовь заранее замену действию.");
+  if (worstGood) {
+    lines.push(
+      `По привычке «${worstGood.name}»: ${getHabitActionTip(worstGood.name, false)}`
+    );
+  }
+  if (worstNegative) {
+    lines.push(
+      `По привычке «${worstNegative.name}»: ${getHabitActionTip(
+        worstNegative.name,
+        true
+      )}`
+    );
+  }
+  if (!worstGood && !worstNegative) {
+    lines.push("Выбери одну привычку и закрепи конкретный минимальный шаг на завтра.");
+  }
   return lines.join("\n");
 }
 
