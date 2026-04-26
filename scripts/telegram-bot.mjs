@@ -31,10 +31,18 @@ const bot = new Telegraf(token);
 const sessions = new Map();
 const pendingLogins = new Map();
 const lastDailyExportByChat = new Map();
+const menuAliases = {
+  checklist: "✅ Чек-лист",
+  habits: "📋 Мои привычки",
+  dailyExport: "📤 Выгрузка дня",
+  advice: "🧠 Персональный совет",
+  month: "📈 Итоги за 30 дней",
+  help: "❓ Помощь",
+};
 const mainMenuButtons = [
-  ["/checklist", "/habits"],
-  ["/daily_export", "/advice"],
-  ["/month", "/help"],
+  [menuAliases.checklist, menuAliases.habits],
+  [menuAliases.dailyExport, menuAliases.advice],
+  [menuAliases.month, menuAliases.help],
 ];
 
 function mainMenuKeyboard() {
@@ -610,34 +618,34 @@ bot.command("logout", async (ctx) => {
   await ctx.reply("Ты вышел из аккаунта.", mainMenuKeyboard());
 });
 
-bot.command("habits", async (ctx) => {
+async function handleHabits(ctx) {
   await withAuth(ctx, async ({ client, user, dayKey }) => {
     const state = await loadState(client, user.id);
     await ctx.reply(`Твои привычки на ${dayKey}\n\n${formatHabitsList(state, dayKey)}`);
   });
-});
+}
 
-bot.command("checklist", async (ctx) => {
+async function handleChecklist(ctx) {
   await withAuth(ctx, async ({ client, user, dayKey }) => {
     await sendChecklist(ctx, client, user, dayKey);
   });
-});
+}
 
-bot.command("daily_export", async (ctx) => {
+async function handleDailyExport(ctx) {
   await withAuth(ctx, async ({ client, user, dayKey }) => {
     await sendDailyExport(ctx, client, user, dayKey);
   });
-});
+}
 
-bot.command("month", async (ctx) => {
+async function handleMonth(ctx) {
   await withAuth(ctx, async ({ client, user }) => {
     const state = await loadState(client, user.id);
     const dayKeys = rollingDayKeysEndingToday(30);
     await replyLong(ctx, buildMonthStatsText(state, dayKeys));
   });
-});
+}
 
-bot.command("advice", async (ctx) => {
+async function handleAdvice(ctx) {
   await withAuth(ctx, async ({ client, user }) => {
     const state = await loadState(client, user.id);
     const dayKeys = rollingDayKeysEndingToday(30);
@@ -654,7 +662,25 @@ bot.command("advice", async (ctx) => {
       await replyLong(ctx, buildAdviceFallback(stats));
     }
   });
-});
+}
+
+bot.command("habits", handleHabits);
+bot.command("checklist", handleChecklist);
+bot.command("daily_export", handleDailyExport);
+bot.command("month", handleMonth);
+bot.command("advice", handleAdvice);
+
+bot.hears(menuAliases.habits, handleHabits);
+bot.hears(menuAliases.checklist, handleChecklist);
+bot.hears(menuAliases.dailyExport, handleDailyExport);
+bot.hears(menuAliases.month, handleMonth);
+bot.hears(menuAliases.advice, handleAdvice);
+bot.hears(menuAliases.help, (ctx) =>
+  ctx.reply(
+    "Команды:\n/start\n/help\n/login\n/logout\n/habits\n/checklist\n/daily_export\n/month\n/advice",
+    mainMenuKeyboard()
+  )
+);
 
 bot.on("text", async (ctx) => {
   const chatId = ctx.chat?.id;
