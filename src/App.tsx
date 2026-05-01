@@ -14,10 +14,12 @@ import {
   Eye,
   EyeOff,
   Flame,
+  HelpCircle,
   LayoutGrid,
   List,
   MoreVertical,
   Plus,
+  Star,
   Target,
   Trophy,
   User,
@@ -34,10 +36,8 @@ import {
 } from './dates'
 import {
   buildCompletionSeries,
-  currentStreakEndingAt,
-  longestStreakInMonth,
+  isSuccess,
   progressPercent,
-  totalSuccessInMonth,
 } from './stats'
 import { buildSeed } from './seed'
 import { EMOJI_OPTIONS } from './emojis'
@@ -158,10 +158,12 @@ type CalendarTarget =
 function WeekDot({
   habit,
   raw,
+  isToday,
   onToggle,
 }: {
   habit: Habit
   raw: boolean | undefined
+  isToday: boolean
   onToggle: () => void
 }) {
   const marked = raw === true
@@ -176,6 +178,7 @@ function WeekDot({
       ? ' border-emerald-400 bg-emerald-100 text-emerald-900'
       : ' border-rose-300 bg-rose-200 text-rose-900'
   }
+  if (isToday) cls += ' ring-2 ring-teal-300 ring-offset-1'
   return (
     <button type="button" className={cls} onClick={onToggle} aria-pressed={marked}>
       {!habit.negative && marked ? '✓' : habit.negative && !marked ? '·' : ''}
@@ -296,6 +299,83 @@ function Cell({
   )
 }
 
+function parseHabitCreatedAt(habit: Habit): { y: number; m0: number; d: number } | null {
+  if (!habit.createdAt) return null
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(habit.createdAt)) return null
+  try {
+    return parseKey(habit.createdAt)
+  } catch {
+    return null
+  }
+}
+
+function habitGoalPeriod(habit: Habit): 'month' | 'week' {
+  return habit.goalPeriod ?? 'month'
+}
+
+function maxGoalForHabitPeriod(period: 'month' | 'week'): number {
+  return period === 'week' ? 7 : 31
+}
+
+function habitCreatedAtDate(habit: Habit): Date | null {
+  const created = parseHabitCreatedAt(habit)
+  if (!created) return null
+  return new Date(created.y, created.m0, created.d)
+}
+
+const LEGACY_HABIT_START_DATE = new Date(2026, 3, 1)
+
+function habitStartDate(habit: Habit): Date {
+  return habitCreatedAtDate(habit) ?? LEGACY_HABIT_START_DATE
+}
+
+function periodDateRange(
+  habit: Habit,
+  y: number,
+  m0: number,
+  weekAnchorDay: number,
+): { start: Date; end: Date; periodDays: number } | null {
+  if (habitGoalPeriod(habit) === 'month') {
+    const dim = daysInMonth(y, m0)
+    return {
+      start: new Date(y, m0, 1),
+      end: new Date(y, m0, dim),
+      periodDays: dim,
+    }
+  }
+  const anchor = new Date(y, m0, Math.max(1, weekAnchorDay))
+  const weekDayMon0 = (anchor.getDay() + 6) % 7
+  const start = new Date(anchor)
+  start.setDate(anchor.getDate() - weekDayMon0)
+  const end = new Date(start)
+  end.setDate(start.getDate() + 6)
+  return { start, end, periodDays: 7 }
+}
+
+function effectiveGoalForPeriod(
+  habit: Habit,
+  y: number,
+  m0: number,
+  weekAnchorDay: number,
+): { goal: number; start: Date; end: Date } {
+  const range = periodDateRange(habit, y, m0, weekAnchorDay)
+  if (!range) {
+    const fallback = new Date(y, m0, 1)
+    return { goal: 0, start: fallback, end: fallback }
+  }
+  const created = habitStartDate(habit)
+  const activeStart =
+    created.getTime() > range.start.getTime() ? created : range.start
+  if (activeStart.getTime() > range.end.getTime()) {
+    return { goal: 0, start: range.start, end: range.end }
+  }
+  const activeDays =
+    Math.floor((range.end.getTime() - activeStart.getTime()) / 86400000) + 1
+  const scaled = Math.round((habit.monthlyGoal * activeDays) / range.periodDays)
+  const goal = !habit.negative && scaled === 0 && habit.monthlyGoal > 0 ? 1 : Math.max(0, scaled)
+  return { goal, start: activeStart, end: range.end }
+}
+
 export default function App() {
   const [habits, setHabits] = useState<Habit[]>(() => loadPersisted().habits)
   const [completions, setCompletions] = useState<Completions>(
@@ -320,7 +400,9 @@ export default function App() {
   const [formEmoji, setFormEmoji] = useState('🎯')
   const [formGoalInput, setFormGoalInput] = useState('20')
   const [formNeg, setFormNeg] = useState(false)
-  const [formDeadline, setFormDeadline] = useState('')
+  const [formGoalPeriod, setFormGoalPeriod] = useState<'month' | 'week'>('month')
+  const [priorityModalOpen, setPriorityModalOpen] = useState(false)
+  const [priorityHintOpen, setPriorityHintOpen] = useState(false)
   const [moreMenuHabitId, setMoreMenuHabitId] = useState<string | null>(null)
   const [clockMenuHabitId, setClockMenuHabitId] = useState<string | null>(null)
   const [session, setSession] = useState<Session | null>(null)
@@ -418,13 +500,6 @@ export default function App() {
   useEffect(() => {
     savePersisted({ habits, completions })
   }, [habits, completions])
-
-  useEffect(() => {
-    if (!modal) return
-    const d = new Date()
-    d.setMonth(d.getMonth() + 1)
-    setFormDeadline(dateKey(d.getFullYear(), d.getMonth(), d.getDate()))
-  }, [modal])
 
   useEffect(() => {
     if (moreMenuHabitId == null && clockMenuHabitId == null) return
@@ -574,9 +649,11 @@ export default function App() {
 
   const dim = daysInMonth(y, m0)
   const today = new Date()
+  const todayY = today.getFullYear()
+  const todayM0 = today.getMonth()
   const todayD = today.getDate()
   const weekdayRu = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб']
-  const todayKey = dateKey(today.getFullYear(), today.getMonth(), today.getDate())
+  const todayKey = dateKey(todayY, todayM0, today.getDate())
   const dayColumns = useMemo(() => {
     if (!isMobile || mobileMarksView === 'month') {
       return Array.from({ length: dim }, (_, i) => {
@@ -660,6 +737,13 @@ export default function App() {
   const selectedDateKey = `${y}-${String(m0 + 1).padStart(2, '0')}-${String(
     Math.max(1, Math.min(dim, selectedD ?? todayD)),
   ).padStart(2, '0')}`
+  const trackerWeekAnchorDay = useMemo(() => {
+    if (isMobile && mobileMarksView === 'week') {
+      return Math.max(1, Math.min(dim, selectedD ?? todayD))
+    }
+    if (y === todayY && m0 === todayM0) return todayD
+    return 1
+  }, [isMobile, mobileMarksView, dim, selectedD, todayD, y, m0, todayY, todayM0])
 
   const setMonthDelta = (delta: number) => {
     const d = new Date(y, m0 + delta, 1)
@@ -770,17 +854,24 @@ export default function App() {
   const addHabit = () => {
     const name = formName.trim()
     if (!name) return
+    const parsedGoal = Math.floor(Number(formGoalInput))
+    const fallbackGoal = formNeg ? 0 : 20
     const h: Habit = {
       id: crypto.randomUUID(),
       name,
       emoji: formEmoji || '🎯',
       negative: formNeg,
       monthlyGoal: Math.max(
-        1,
-        Math.min(31, Math.floor(Number(formGoalInput)) || 20),
+        formNeg ? 0 : 1,
+        Math.min(
+          maxGoalForHabitPeriod(formGoalPeriod),
+          Number.isFinite(parsedGoal) ? parsedGoal : fallbackGoal,
+        ),
       ),
+      goalPeriod: formGoalPeriod,
+      createdAt: todayKey,
       archived: false,
-      deadline: formDeadline || null,
+      deadline: null,
       postponedUntil: null,
     }
     dispatch('habit_upsert', h)
@@ -789,6 +880,7 @@ export default function App() {
     setFormEmoji('🎯')
     setFormGoalInput('20')
     setFormNeg(false)
+    setFormGoalPeriod('month')
   }
 
   const removeHabit = (id: string) => {
@@ -847,9 +939,15 @@ export default function App() {
 
   const trackerOrderedHabits = useMemo(() => {
     const visible = habits.filter((h) => !habitHiddenFromTracker(h, todayKey))
-    const pos = visible.filter((h) => !h.negative)
-    const neg = visible.filter((h) => h.negative)
-    return [...pos, ...neg]
+    return [...visible].sort((a, b) => {
+      const ap = a.isPriority ? 0 : 1
+      const bp = b.isPriority ? 0 : 1
+      if (ap !== bp) return ap - bp
+      const an = a.negative ? 1 : 0
+      const bn = b.negative ? 1 : 0
+      if (an !== bn) return an - bn
+      return a.name.localeCompare(b.name, 'ru')
+    })
   }, [habits, todayKey])
 
   const trackerStatsKind = useMemo(() => {
@@ -864,6 +962,9 @@ export default function App() {
     const active = habits.filter((h) => !habitInactiveInList(h, todayKey))
     const inactive = habits.filter((h) => habitInactiveInList(h, todayKey))
     const sort = (a: Habit, b: Habit) => {
+      const ap = a.isPriority ? 0 : 1
+      const bp = b.isPriority ? 0 : 1
+      if (ap !== bp) return ap - bp
       const an = a.negative ? 1 : 0
       const bn = b.negative ? 1 : 0
       if (an !== bn) return an - bn
@@ -874,7 +975,15 @@ export default function App() {
     return { active, inactive }
   }, [habits, todayKey])
 
+  const activePriorityCount = useMemo(
+    () => habitsEditorSections.active.filter((h) => h.isPriority === true).length,
+    [habitsEditorSections],
+  )
+
   const rowStyle = (h: Habit) => {
+    if (h.isPriority) {
+      return h.negative ? 'bg-rose-100' : 'bg-emerald-100'
+    }
     if (h.negative) {
       const i = habits.filter((x) => x.negative).findIndex((x) => x.id === h.id)
       return i % 2 === 0 ? 'bg-rose-50' : 'bg-red-50'
@@ -883,18 +992,97 @@ export default function App() {
     return i % 2 === 0 ? 'bg-white' : 'bg-teal-50'
   }
 
-  const slipCountInMonth = (
+  const editorCardStyle = (h: Habit) => {
+    if (h.isPriority) {
+      return h.negative
+        ? 'border-rose-400 bg-rose-100'
+        : 'border-emerald-400 bg-emerald-100'
+    }
+    if (h.negative) return 'border-rose-300 bg-rose-50'
+    return 'border-emerald-300 bg-emerald-50'
+  }
+
+  const editorFieldStyle = (h: Habit) => {
+    if (h.isPriority) {
+      return h.negative
+        ? 'border-rose-400 bg-white focus:ring-rose-300'
+        : 'border-emerald-400 bg-white focus:ring-emerald-300'
+    }
+    if (h.negative) return 'border-rose-300 bg-white focus:ring-rose-300'
+    return 'border-emerald-300 bg-white focus:ring-emerald-300'
+  }
+
+  const countDoneInDateRange = (
     map: Record<string, boolean> | undefined,
-    y0: number,
-    m00: number,
+    start: Date,
+    end: Date,
   ) => {
     const m = map ?? {}
     let n = 0
-    const d0 = daysInMonth(y0, m00)
-    for (let d = 1; d <= d0; d++) {
-      if (m[dateKey(y0, m00, d)] === true) n++
+    const cur = new Date(start)
+    while (cur.getTime() <= end.getTime()) {
+      const k = dateKey(cur.getFullYear(), cur.getMonth(), cur.getDate())
+      if (m[k] === true) n++
+      cur.setDate(cur.getDate() + 1)
     }
     return n
+  }
+
+  const goalAndDoneForHabit = (
+    h: Habit,
+    map: Record<string, boolean> | undefined,
+    y0: number,
+    m00: number,
+    weekAnchorDay: number,
+  ) => {
+    const { goal, start, end } = effectiveGoalForPeriod(h, y0, m00, weekAnchorDay)
+    const done = countDoneInDateRange(map, start, end)
+    return { goal, done, period: habitGoalPeriod(h) }
+  }
+
+  const analyticsCurrentStreak = (
+    h: Habit,
+    map: Record<string, boolean> | undefined,
+    ref: Date,
+  ) => {
+    const m = map ?? {}
+    const start = habitStartDate(h)
+    const end = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate())
+    if (start.getTime() > end.getTime()) return 0
+    let streak = 0
+    const cur = new Date(end)
+    while (cur.getTime() >= start.getTime()) {
+      const k = dateKey(cur.getFullYear(), cur.getMonth(), cur.getDate())
+      if (!isSuccess(h, m[k])) break
+      streak++
+      cur.setDate(cur.getDate() - 1)
+    }
+    return streak
+  }
+
+  const analyticsLongestStreak = (
+    h: Habit,
+    map: Record<string, boolean> | undefined,
+    ref: Date,
+  ) => {
+    const m = map ?? {}
+    const start = habitStartDate(h)
+    const end = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate())
+    if (start.getTime() > end.getTime()) return 0
+    let best = 0
+    let curStreak = 0
+    const d = new Date(start)
+    while (d.getTime() <= end.getTime()) {
+      const k = dateKey(d.getFullYear(), d.getMonth(), d.getDate())
+      if (isSuccess(h, m[k])) {
+        curStreak++
+        if (curStreak > best) best = curStreak
+      } else {
+        curStreak = 0
+      }
+      d.setDate(d.getDate() + 1)
+    }
+    return best
   }
 
   const submitAuth = async () => {
@@ -1158,11 +1346,24 @@ export default function App() {
             </button>
           </div>
         )}
+        <div className="mb-3 flex justify-end">
+          <button
+            type="button"
+            onClick={() => {
+              setPriorityModalOpen(true)
+              setPriorityHintOpen(false)
+            }}
+            className="inline-flex items-center gap-1 rounded-lg border border-teal-300 bg-teal-50 px-3 py-1.5 text-sm font-semibold text-teal-900 hover:bg-teal-100"
+          >
+            <Star className="h-4 w-4 fill-teal-500 text-teal-500" />
+            Приоритеты
+          </button>
+        </div>
         <div className="space-y-4">
           {habitsEditorSections.active.map((h) => (
             <div
               key={h.id}
-              className={`rounded-2xl border border-teal-100 px-4 py-3 shadow-sm ${rowStyle(h)}`}
+              className={`rounded-2xl border px-4 py-3 shadow-sm ${editorCardStyle(h)}`}
             >
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 <div
@@ -1223,12 +1424,22 @@ export default function App() {
                     const habit = habitsRef.current.find((x) => x.id === h.id)
                     if (habit) dispatch('habit_upsert', habit)
                   }}
-                  className="min-w-[8rem] flex-1 rounded-lg border border-teal-200 bg-white px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-teal-300"
+                  className={`min-w-[8rem] flex-1 rounded-lg border px-2 py-1.5 text-sm outline-none focus:ring-2 ${editorFieldStyle(h)}`}
                 />
+                {h.isPriority && (
+                  <Star
+                    className={`h-4 w-4 shrink-0 ${
+                      h.negative
+                        ? 'fill-rose-500 text-rose-500'
+                        : 'fill-emerald-500 text-emerald-500'
+                    }`}
+                    aria-hidden
+                  />
+                )}
                 <input
                   type="number"
                   min={h.negative ? 0 : 1}
-                  max={31}
+                  max={maxGoalForHabitPeriod(habitGoalPeriod(h))}
                   value={(() => {
                     const draft = goalInputDrafts[h.id]
                     if (draft !== undefined) return draft
@@ -1242,7 +1453,10 @@ export default function App() {
                     const n = Number(raw)
                     if (Number.isNaN(n)) return
                     const minGoal = h.negative ? 0 : 1
-                    const next = Math.max(minGoal, Math.min(31, Math.floor(n)))
+                    const next = Math.max(
+                      minGoal,
+                      Math.min(maxGoalForHabitPeriod(habitGoalPeriod(h)), Math.floor(n)),
+                    )
                     setHabits((prev) =>
                       prev.map((x) =>
                         x.id === h.id ? { ...x, monthlyGoal: next } : x,
@@ -1280,15 +1494,13 @@ export default function App() {
                     const habit = habitsRef.current.find((x) => x.id === h.id)
                     if (!habit) return
                     const minGoal = habit.negative ? 0 : 1
+                    const maxGoal = maxGoalForHabitPeriod(habitGoalPeriod(habit))
                     let normalized = habit.monthlyGoal
                     if (raw === '') normalized = minGoal
                     else if (raw !== undefined) {
                       const parsed = Number(raw)
                       if (Number.isFinite(parsed)) {
-                        normalized = Math.max(
-                          minGoal,
-                          Math.min(31, Math.floor(parsed)),
-                        )
+                        normalized = Math.max(minGoal, Math.min(maxGoal, Math.floor(parsed)))
                       }
                     } else if (!habit.negative && habit.monthlyGoal < 1) {
                       normalized = 1
@@ -1303,8 +1515,27 @@ export default function App() {
                       dispatch('habit_upsert', habit)
                     }
                   }}
-                  className="w-20 rounded-lg border border-teal-200 bg-white px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-teal-300"
+                  className={`w-20 rounded-lg border px-2 py-1.5 text-sm outline-none focus:ring-2 ${editorFieldStyle(h)}`}
                 />
+                <select
+                  value={habitGoalPeriod(h)}
+                  onChange={(e) => {
+                    const period = e.target.value as 'month' | 'week'
+                    const maxGoal = maxGoalForHabitPeriod(period)
+                    const minGoal = h.negative ? 0 : 1
+                    const nextGoal = Math.max(
+                      minGoal,
+                      Math.min(maxGoal, h.monthlyGoal),
+                    )
+                    const updated = { ...h, goalPeriod: period, monthlyGoal: nextGoal }
+                    setHabits((prev) => prev.map((x) => (x.id === h.id ? updated : x)))
+                    dispatch('habit_upsert', updated)
+                  }}
+                  className={`w-24 rounded-lg border px-2 py-1.5 text-sm outline-none focus:ring-2 ${editorFieldStyle(h)}`}
+                >
+                  <option value="month">В месяц</option>
+                  <option value="week">В неделю</option>
+                </select>
                 <div
                   className="relative ml-auto flex shrink-0 items-center gap-0.5"
                   data-habit-menu-root
@@ -1723,14 +1954,38 @@ export default function App() {
               {isMobile ? (
                 <div className="space-y-3 px-0.5">
                   {trackerOrderedHabits.map((h) => {
+                    const { goal, done, period } = goalAndDoneForHabit(
+                      h,
+                      completions[h.id],
+                      y,
+                      m0,
+                      trackerWeekAnchorDay,
+                    )
+                    const periodLabel = period === 'week' ? 'в неделю' : 'в месяц'
                     const goalLabel = h.negative
-                      ? `до ${h.monthlyGoal} срыв./мес.`
-                      : `${h.monthlyGoal} дн. в месяц`
+                      ? `${done}/${goal} срыв. ${periodLabel}`
+                      : `${done}/${goal} дн. ${periodLabel}`
                     return (
                       <div
                         key={h.id}
-                        className="rounded-2xl border border-neutral-200/70 bg-white px-4 py-3 shadow-sm"
+                        className={`relative rounded-2xl border px-4 py-3 shadow-sm ${
+                          h.isPriority
+                            ? h.negative
+                              ? 'border-rose-300 bg-rose-50/70'
+                              : 'border-emerald-300 bg-emerald-50/70'
+                            : 'border-neutral-200/70 bg-white'
+                        }`}
                       >
+                        {h.isPriority && (
+                          <Star
+                            className={`absolute left-1 top-1 h-3 w-3 ${
+                              h.negative
+                                ? 'fill-rose-500 text-rose-500'
+                                : 'fill-emerald-500 text-emerald-500'
+                            }`}
+                            aria-hidden
+                          />
+                        )}
                         <div className="mb-3 flex items-start justify-between gap-2">
                           <div className="flex min-w-0 flex-1 items-start gap-2">
                             <span className="text-2xl leading-none">{h.emoji}</span>
@@ -1765,12 +2020,17 @@ export default function App() {
                                   key={key}
                                   className="flex min-w-0 flex-1 flex-col items-center gap-1.5"
                                 >
-                                  <span className="text-[10px] font-medium text-neutral-400">
+                                  <span
+                                    className={`text-[10px] font-medium ${
+                                      col.isToday ? 'text-teal-700' : 'text-neutral-400'
+                                    }`}
+                                  >
                                     {col.weekday}
                                   </span>
                                   <WeekDot
                                     habit={h}
                                     raw={raw}
+                                    isToday={col.isToday}
                                     onToggle={() => toggleDay(h.id, key)}
                                   />
                                 </div>
@@ -1870,7 +2130,7 @@ export default function App() {
                           h.negative ? 'text-rose-950' : 'text-teal-950'
                         } ${rowStyle(h)} border-r-teal-100/80 shadow-[4px_0_8px_-2px_rgba(15,118,110,0.12)]`}
                       >
-                        <div className="flex min-w-0 flex-col gap-0.5">
+                        <div className="relative flex min-w-0 flex-col gap-0.5">
                           <div className="flex min-w-0 items-center gap-1">
                             <span className="shrink-0 select-none">{h.emoji}</span>
                             <span
@@ -1880,6 +2140,16 @@ export default function App() {
                             >
                               {h.name}
                             </span>
+                            {h.isPriority && (
+                              <Star
+                                className={`ml-auto h-3 w-3 shrink-0 ${
+                                  h.negative
+                                    ? 'fill-rose-500 text-rose-500'
+                                    : 'fill-emerald-500 text-emerald-500'
+                                }`}
+                                aria-hidden
+                              />
+                            )}
                           </div>
                           {h.deadline ? (
                             <span className="block pl-5 text-[9px] leading-tight text-neutral-500 sm:text-[10px]">
@@ -1952,10 +2222,13 @@ export default function App() {
                     <div className="space-y-3">
                       {trackerOrderedHabits.map((h) => {
                         const map = completions[h.id]
-                        const goal = h.monthlyGoal
-                        const done = h.negative
-                          ? slipCountInMonth(map, y, m0)
-                          : totalSuccessInMonth(h, map, y, m0)
+                        const { goal, done } = goalAndDoneForHabit(
+                          h,
+                          map,
+                          y,
+                          m0,
+                          trackerWeekAnchorDay,
+                        )
                         const pct = h.negative
                           ? done === 0
                             ? 100
@@ -1966,8 +2239,8 @@ export default function App() {
                                 ) / 10,
                               )
                           : progressPercent(done, goal)
-                        const cur = currentStreakEndingAt(h, map, y, m0, today)
-                        const lon = longestStreakInMonth(h, map, y, m0)
+                        const cur = analyticsCurrentStreak(h, map, today)
+                        const lon = analyticsLongestStreak(h, map, today)
                         const bar = Math.min(100, pct)
                         return (
                           <div
@@ -2102,10 +2375,13 @@ export default function App() {
                       <div className="divide-y divide-teal-200">
                         {trackerOrderedHabits.map((h) => {
                           const map = completions[h.id]
-                          const goal = h.monthlyGoal
-                          const done = h.negative
-                            ? slipCountInMonth(map, y, m0)
-                            : totalSuccessInMonth(h, map, y, m0)
+                          const { goal, done } = goalAndDoneForHabit(
+                            h,
+                            map,
+                            y,
+                            m0,
+                            trackerWeekAnchorDay,
+                          )
                           const pct = h.negative
                             ? done === 0
                               ? 100
@@ -2116,8 +2392,8 @@ export default function App() {
                                   ) / 10,
                                 )
                             : progressPercent(done, goal)
-                          const cur = currentStreakEndingAt(h, map, y, m0, today)
-                          const lon = longestStreakInMonth(h, map, y, m0)
+                          const cur = analyticsCurrentStreak(h, map, today)
+                          const lon = analyticsLongestStreak(h, map, today)
                           const bar = Math.min(100, pct)
                           return (
                             <div
@@ -2520,6 +2796,92 @@ export default function App() {
         </div>
       )}
 
+      {priorityModalOpen && (
+        <div
+          className="fixed inset-0 z-[121] flex items-end justify-center overflow-y-auto bg-black/40 p-0 sm:items-center sm:p-4"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              setPriorityModalOpen(false)
+              setPriorityHintOpen(false)
+            }
+          }}
+        >
+          <div className="my-2 w-full max-w-lg rounded-t-2xl rounded-b-xl border border-amber-200 bg-white p-4 shadow-2xl sm:my-auto sm:rounded-2xl sm:p-6">
+            <div className="mb-4 flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <h3 className="text-lg font-semibold text-amber-950">
+                  Приоритетные привычки
+                </h3>
+                <p className="mt-0.5 text-sm text-amber-800">
+                  Выбрано {activePriorityCount}/2
+                </p>
+              </div>
+              <div className="flex items-center gap-1">
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setPriorityHintOpen((v) => !v)}
+                    className="rounded-lg p-1.5 text-amber-700 hover:bg-amber-100"
+                    aria-label="Подсказка о фокусе"
+                  >
+                    <HelpCircle className="h-5 w-5" />
+                  </button>
+                  {priorityHintOpen && (
+                    <div className="absolute right-0 top-full z-10 mt-1 w-64 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900 shadow-lg">
+                      Рекомендуется держать особый фокус не более чем на 1–2 привычках.
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPriorityModalOpen(false)
+                    setPriorityHintOpen(false)
+                  }}
+                  className="rounded-lg p-1.5 text-amber-700 hover:bg-amber-100"
+                  aria-label="Закрыть"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+            <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
+              {habitsEditorSections.active.map((h) => {
+                const selected = h.isPriority === true
+                const disabled = !selected && activePriorityCount >= 2
+                return (
+                  <label
+                    key={`priority-pick-${h.id}`}
+                    className={`flex cursor-pointer items-center justify-between rounded-xl border px-3 py-2 ${
+                      selected
+                        ? 'border-amber-300 bg-amber-50'
+                        : 'border-teal-100 bg-white'
+                    } ${disabled ? 'opacity-50' : ''}`}
+                  >
+                    <span className="min-w-0 truncate text-sm font-medium text-teal-900">
+                      {h.emoji} {h.name}
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      disabled={disabled}
+                      onChange={(e) => {
+                        const next = { ...h, isPriority: e.target.checked }
+                        setHabits((prev) =>
+                          prev.map((x) => (x.id === h.id ? next : x)),
+                        )
+                        dispatch('habit_upsert', next)
+                      }}
+                      className="h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                    />
+                  </label>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {modal && (
         <div
           className="fixed inset-0 z-[120] flex max-h-[100dvh] items-end justify-center overflow-y-auto overscroll-contain bg-black/40 p-0 sm:items-center sm:p-4 sm:py-8"
@@ -2581,31 +2943,53 @@ export default function App() {
             </div>
             <label className="mb-4 block text-sm font-medium text-teal-800">
               {formNeg
-                ? 'Допустимое количество срывов в месяц'
-                : 'Цель на месяц (дней)'}
+                ? `Допустимое количество срывов ${formGoalPeriod === 'week' ? 'в неделю' : 'в месяц'}`
+                : `Цель ${formGoalPeriod === 'week' ? 'на неделю' : 'на месяц'} (дней)`}
               <input
                 type="number"
-                min={1}
-                max={31}
+                min={formNeg ? 0 : 1}
+                max={maxGoalForHabitPeriod(formGoalPeriod)}
                 value={formGoalInput}
                 onChange={(e) => setFormGoalInput(e.target.value)}
                 className="mt-1 w-full rounded-lg border border-teal-200 px-3 py-2 outline-none focus:ring-2 focus:ring-teal-400"
               />
             </label>
             <label className="mb-4 block text-sm font-medium text-teal-800">
-              Соблюдать до (окончание цикла)
-              <input
-                type="date"
-                value={formDeadline}
-                onChange={(e) => setFormDeadline(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-teal-200 px-3 py-2 outline-none focus:ring-2 focus:ring-teal-400"
-              />
+              Период цели
+              <select
+                value={formGoalPeriod}
+                onChange={(e) => {
+                  const period = e.target.value as 'month' | 'week'
+                  setFormGoalPeriod(period)
+                  const maxGoal = maxGoalForHabitPeriod(period)
+                  const minGoal = formNeg ? 0 : 1
+                  const parsed = Math.floor(Number(formGoalInput))
+                  if (Number.isFinite(parsed)) {
+                    const next = Math.max(minGoal, Math.min(maxGoal, parsed))
+                    setFormGoalInput(String(next))
+                  }
+                }}
+                className="mt-1 w-full rounded-lg border border-teal-200 bg-white px-3 py-2 outline-none focus:ring-2 focus:ring-teal-400"
+              >
+                <option value="month">В месяц</option>
+                <option value="week">В неделю</option>
+              </select>
             </label>
             <label className="mb-6 flex cursor-pointer items-center gap-2 text-sm text-teal-900">
               <input
                 type="checkbox"
                 checked={formNeg}
-                onChange={(e) => setFormNeg(e.target.checked)}
+                onChange={(e) => {
+                  const nextNeg = e.target.checked
+                  setFormNeg(nextNeg)
+                  const maxGoal = maxGoalForHabitPeriod(formGoalPeriod)
+                  const minGoal = nextNeg ? 0 : 1
+                  const parsed = Math.floor(Number(formGoalInput))
+                  if (Number.isFinite(parsed)) {
+                    const next = Math.max(minGoal, Math.min(maxGoal, parsed))
+                    setFormGoalInput(String(next))
+                  }
+                }}
                 className="h-4 w-4 rounded border-teal-400 text-teal-600 focus:ring-teal-500"
               />
               Негативная привычка (отмечаю срывы)

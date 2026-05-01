@@ -43,6 +43,7 @@ function habitFromRow(r: DbHabitRow): Habit {
     emoji: r.emoji,
     negative: r.negative,
     monthlyGoal: r.monthly_goal,
+    goalPeriod: 'month',
     archived: r.archived ?? false,
     deadline: r.deadline ?? null,
     postponedUntil: r.postponed_until ?? null,

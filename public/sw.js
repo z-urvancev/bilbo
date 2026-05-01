@@ -1,4 +1,4 @@
-const CACHE = 'habit-cal-v1'
+const CACHE = 'habit-cal-v2'
 const PRECACHE = ['./index.html', './manifest.json', './apple-touch-icon.png']
 
 self.addEventListener('install', (e) => {
@@ -11,7 +11,16 @@ self.addEventListener('install', (e) => {
 })
 
 self.addEventListener('activate', (e) => {
-  e.waitUntil(self.clients.claim())
+  e.waitUntil(
+    caches
+      .keys()
+      .then((keys) =>
+        Promise.all(
+          keys.map((k) => (k === CACHE ? Promise.resolve() : caches.delete(k))),
+        ),
+      )
+      .then(() => self.clients.claim()),
+  )
 })
 
 self.addEventListener('fetch', (e) => {

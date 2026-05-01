@@ -14,6 +14,8 @@ export function buildSeed(now: Date): Persisted {
       emoji: '🧘',
       negative: false,
       monthlyGoal: 20,
+      goalPeriod: 'month',
+      createdAt: dateKey(y, m0, 1),
     },
     {
       id: 'seed-walk',
@@ -21,6 +23,8 @@ export function buildSeed(now: Date): Persisted {
       emoji: '🚶',
       negative: false,
       monthlyGoal: 22,
+      goalPeriod: 'month',
+      createdAt: dateKey(y, m0, 1),
     },
     {
       id: 'seed-neg',
@@ -28,6 +32,8 @@ export function buildSeed(now: Date): Persisted {
       emoji: '🍫',
       negative: true,
       monthlyGoal: 0,
+      goalPeriod: 'month',
+      createdAt: dateKey(y, m0, 1),
     },
   ]
 

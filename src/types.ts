@@ -4,6 +4,9 @@ export type Habit = {
   emoji: string
   negative: boolean
   monthlyGoal: number
+  goalPeriod?: 'month' | 'week'
+  isPriority?: boolean
+  createdAt?: string
   archived?: boolean
   deadline?: string | null
   postponedUntil?: string | null
