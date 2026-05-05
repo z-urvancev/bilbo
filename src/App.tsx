@@ -49,6 +49,7 @@ import {
 import { supabase, supabaseConfigured } from './lib/supabase'
 import {
   applyEvent,
+  fetchServerSyncVersion,
   loadPersistedFromEvents,
   pushEventBatch,
   subscribeToSyncEvents,
@@ -415,17 +416,28 @@ function effectiveGoalForPeriod(
     const fallback = new Date(y, m0, 1)
     return { goal: 0, start: fallback, end: fallback }
   }
-  const created = habitStartDate(habit)
-  const activeStart =
-    created.getTime() > range.start.getTime() ? created : range.start
-  if (activeStart.getTime() > range.end.getTime()) {
+  const baseGoal = Math.max(0, habit.monthlyGoal)
+  const created = habitCreatedAtDate(habit)
+  if (created && created.getTime() > range.end.getTime()) {
     return { goal: 0, start: range.start, end: range.end }
   }
-  const activeDays =
-    Math.floor((range.end.getTime() - activeStart.getTime()) / 86400000) + 1
-  const scaled = Math.round((habit.monthlyGoal * activeDays) / range.periodDays)
-  const goal = !habit.negative && scaled === 0 && habit.monthlyGoal > 0 ? 1 : Math.max(0, scaled)
-  return { goal, start: activeStart, end: range.end }
+  if (
+    created &&
+    habitGoalPeriod(habit) === 'month' &&
+    created.getFullYear() === y &&
+    created.getMonth() === m0
+  ) {
+    const activeDays =
+      Math.floor((range.end.getTime() - created.getTime()) / 86400000) + 1
+    const scaled = Math.round((baseGoal * activeDays) / range.periodDays)
+    const goal = !habit.negative && scaled === 0 && baseGoal > 0 ? 1 : Math.max(0, scaled)
+    return { goal, start: range.start, end: range.end }
+  }
+  return {
+    goal: baseGoal,
+    start: range.start,
+    end: range.end,
+  }
 }
 
 export default function App() {
@@ -481,6 +493,7 @@ export default function App() {
   const flushTimerRef = useRef<number | undefined>(undefined)
   const flushInFlightRef = useRef<Promise<boolean> | null>(null)
   const pullInFlightRef = useRef<Promise<void> | null>(null)
+  const serverVersionRef = useRef<string | null>(null)
   const goalDebouncersRef = useRef<Record<string, number>>({})
   const authMenuRootRef = useRef<HTMLDivElement | null>(null)
   const [calendarTarget, setCalendarTarget] = useState<CalendarTarget | null>(null)
@@ -661,7 +674,8 @@ export default function App() {
       const uid = sessionUserId
       try {
         const flushed = await flushPendingInternal()
-        const { state } = await loadPersistedFromEvents(uid)
+        const { state, version } = await loadPersistedFromEvents(uid)
+        serverVersionRef.current = version
         const stateWithPending = applyPendingEvents(state, pendingRef.current)
         setHabits(stateWithPending.habits)
         setCompletions(stateWithPending.completions)
@@ -684,12 +698,37 @@ export default function App() {
     }
   }, [sessionUserId, supabaseSyncPhase, flushPendingInternal, setSyncErr])
 
+  const checkServerFreshness = useCallback(async () => {
+    if (!sessionUserId || supabaseSyncPhase !== 'ready' || !supabase) return
+    if (pendingRef.current.length > 0) {
+      await pullIncremental()
+      return
+    }
+    try {
+      const version = await fetchServerSyncVersion(sessionUserId)
+      if (!version || version !== serverVersionRef.current) {
+        await pullIncremental()
+      } else {
+        setSyncErr(null)
+      }
+    } catch (e) {
+      if (isLikelyNetworkError(e)) {
+        setSyncErr(
+          'Сеть недоступна. Изменения сохраняются локально и синхронизируются при восстановлении связи.',
+        )
+        return
+      }
+      setSyncErr(errText(e))
+    }
+  }, [sessionUserId, supabaseSyncPhase, pullIncremental, setSyncErr])
+
   useEffect(() => {
     if (!sessionUserId || !supabaseConfigured) {
       setSupabaseSyncPhase('idle')
       pendingRef.current = []
       flushInFlightRef.current = null
       pullInFlightRef.current = null
+      serverVersionRef.current = null
       return
     }
     const uid = sessionUserId
@@ -699,8 +738,9 @@ export default function App() {
     pendingRef.current = loadPendingOutgoing(uid)
     void (async () => {
       try {
-        const { state } = await loadPersistedFromEvents(uid)
+        const { state, version } = await loadPersistedFromEvents(uid)
         if (cancelled) return
+        serverVersionRef.current = version
         const stateWithPending = applyPendingEvents(state, pendingRef.current)
         setHabits(stateWithPending.habits)
         setCompletions(stateWithPending.completions)
@@ -747,14 +787,14 @@ export default function App() {
       void pullIncremental()
     }
     const t = window.setInterval(() => {
-      void pullIncremental()
-    }, 15000)
+      void checkServerFreshness()
+    }, 5000)
     window.addEventListener('online', onOnline)
     return () => {
       window.clearInterval(t)
       window.removeEventListener('online', onOnline)
     }
-  }, [sessionUserId, supabaseSyncPhase, pullIncremental])
+  }, [sessionUserId, supabaseSyncPhase, pullIncremental, checkServerFreshness])
 
   useEffect(() => {
     if (!sessionUserId || supabaseSyncPhase !== 'ready' || !supabaseConfigured)

@@ -52,7 +52,7 @@ function dateOrNull(value: unknown): string | null {
 }
 
 function habitFromRow(r: DbHabitRow): Habit {
-  const createdAt = dateOrNull(r.created_day) ?? dateOrNull(r.created_at?.slice(0, 10))
+  const createdAt = dateOrNull(r.created_day)
   return {
     id: r.id,
     name: r.name,
@@ -304,12 +304,30 @@ async function replaceServerState(userId: string, state: Persisted) {
   }
 }
 
-async function markServerStateInitialized(userId: string) {
+async function touchServerSyncMeta(userId: string) {
   if (!supabase) return
   const { error } = await supabase
     .from('calendar_sync_meta')
-    .upsert({ user_id: userId }, { onConflict: 'user_id' })
+    .upsert(
+      {
+        user_id: userId,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id' },
+    )
   if (error) throw error
+}
+
+export async function fetchServerSyncVersion(userId: string): Promise<string | null> {
+  if (!supabase) return null
+  const { data, error } = await supabase
+    .from('calendar_sync_meta')
+    .select('updated_at')
+    .eq('user_id', userId)
+    .maybeSingle()
+  if (error) throw error
+  const updatedAt = (data as { updated_at?: unknown } | null)?.updated_at
+  return typeof updatedAt === 'string' ? updatedAt : null
 }
 
 async function ensureServerStateInitialized(userId: string) {
@@ -326,21 +344,25 @@ async function ensureServerStateInitialized(userId: string) {
   const fromLegacyTables = fromEvents ?? (await legacyPullPersisted(userId))
   const initialState = fromLegacyTables ?? buildSeed(new Date())
   await replaceServerState(userId, initialState)
-  await markServerStateInitialized(userId)
+  await touchServerSyncMeta(userId)
 }
 
 async function applyServerOperation(userId: string, item: PendingOutgoing) {
   switch (item.kind) {
     case 'state_snapshot':
       await replaceServerState(userId, item.payload as Persisted)
-      await markServerStateInitialized(userId)
+      await touchServerSyncMeta(userId)
       return
     case 'habit_upsert':
       await upsertServerHabit(userId, item.payload as Habit)
+      await touchServerSyncMeta(userId)
       return
     case 'habit_delete': {
       const { id } = item.payload as { id?: string }
-      if (id) await softDeleteServerHabit(userId, id)
+      if (id) {
+        await softDeleteServerHabit(userId, id)
+        await touchServerSyncMeta(userId)
+      }
       return
     }
     case 'mark_set': {
@@ -349,7 +371,10 @@ async function applyServerOperation(userId: string, item: PendingOutgoing) {
         dayKey?: string
         marked?: boolean
       }
-      if (habitId && dayKey) await upsertServerMark(userId, habitId, dayKey, marked === true)
+      if (habitId && dayKey) {
+        await upsertServerMark(userId, habitId, dayKey, marked === true)
+        await touchServerSyncMeta(userId)
+      }
       return
     }
     default:
@@ -370,12 +395,16 @@ export async function pushEventBatch(
 
 export async function loadPersistedFromEvents(
   userId: string,
-): Promise<{ state: Persisted; lastSeq: number }> {
+): Promise<{ state: Persisted; lastSeq: number; version: string | null }> {
   if (!supabase) {
-    return { state: buildSeed(new Date()), lastSeq: 0 }
+    return { state: buildSeed(new Date()), lastSeq: 0, version: null }
   }
   await ensureServerStateInitialized(userId)
-  return { state: await fetchServerPersisted(userId), lastSeq: 0 }
+  const [state, version] = await Promise.all([
+    fetchServerPersisted(userId),
+    fetchServerSyncVersion(userId),
+  ])
+  return { state, lastSeq: 0, version }
 }
 
 export function subscribeToSyncEvents(
