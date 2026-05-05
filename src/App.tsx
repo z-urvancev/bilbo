@@ -86,13 +86,13 @@ function errText(e: unknown): string {
 }
 
 function isLikelyNetworkError(e: unknown): boolean {
-  if (!(e instanceof Error)) return false
-  const msg = (e.message || '').toLowerCase()
+  const msg = errText(e).toLowerCase()
   return (
     msg.includes('failed to fetch') ||
     msg.includes('networkerror') ||
     msg.includes('network request failed') ||
-    msg.includes('load failed')
+    msg.includes('load failed') ||
+    msg.includes('offline')
   )
 }
 
@@ -217,13 +217,23 @@ function pendingStorageKey(userId: string): string {
   return `${PENDING_KEY_PREFIX}${userId}`
 }
 
+function isPendingOutgoing(value: unknown): value is PendingOutgoing {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Partial<PendingOutgoing>
+  return (
+    typeof item.client_event_id === 'string' &&
+    typeof item.kind === 'string' &&
+    'payload' in item
+  )
+}
+
 function loadPendingOutgoing(userId: string): PendingOutgoing[] {
   try {
     const raw = localStorage.getItem(pendingStorageKey(userId))
     if (!raw) return []
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
-    return parsed as PendingOutgoing[]
+    return parsed.filter(isPendingOutgoing)
   } catch {
     return []
   }
@@ -235,6 +245,14 @@ function savePendingOutgoing(userId: string, queue: PendingOutgoing[]) {
     return
   }
   localStorage.setItem(pendingStorageKey(userId), JSON.stringify(queue))
+}
+
+function applyPendingEvents(state: Persisted, queue: PendingOutgoing[]): Persisted {
+  let next = state
+  for (const item of queue) {
+    next = applyEvent(next, { kind: item.kind, payload: item.payload })
+  }
+  return next
 }
 
 function MiniCalendar() {
@@ -464,11 +482,14 @@ export default function App() {
   const lastSeqRef = useRef(0)
   const pendingRef = useRef<PendingOutgoing[]>([])
   const flushTimerRef = useRef<number | undefined>(undefined)
+  const flushInFlightRef = useRef<Promise<boolean> | null>(null)
+  const pullInFlightRef = useRef<Promise<void> | null>(null)
   const goalDebouncersRef = useRef<Record<string, number>>({})
   const authMenuRootRef = useRef<HTMLDivElement | null>(null)
   const [calendarTarget, setCalendarTarget] = useState<CalendarTarget | null>(null)
   const [calendarY, setCalendarY] = useState(now.getFullYear())
   const [calendarM0, setCalendarM0] = useState(now.getMonth())
+  const sessionUserId = session?.user?.id
 
   useEffect(() => {
     if (!authModalOpen) {
@@ -504,7 +525,7 @@ export default function App() {
 
   useEffect(() => {
     setAuthMenuOpen(false)
-  }, [session?.user?.id])
+  }, [sessionUserId])
 
   useEffect(() => {
     setAuthMenuOpen(false)
@@ -553,23 +574,33 @@ export default function App() {
     }
   }, [moreMenuHabitId, clockMenuHabitId])
 
-  const flushPendingInternal = useCallback(async () => {
-    if (!session?.user || !supabase || pendingRef.current.length === 0) return
-    const uid = session.user.id
-    const batch = [...pendingRef.current]
-    pendingRef.current = []
-    savePendingOutgoing(uid, pendingRef.current)
+  const flushPendingInternal = useCallback(async (): Promise<boolean> => {
+    if (flushInFlightRef.current) return flushInFlightRef.current
+    const run = (async () => {
+      if (!sessionUserId || !supabase || pendingRef.current.length === 0) return true
+      const uid = sessionUserId
+      while (pendingRef.current.length > 0) {
+        const batch = pendingRef.current.slice()
+        try {
+          await pushEventBatch(uid, batch)
+          pendingRef.current = pendingRef.current.slice(batch.length)
+          savePendingOutgoing(uid, pendingRef.current)
+          setSyncErr(null)
+        } catch (e) {
+          savePendingOutgoing(uid, pendingRef.current)
+          setSyncErr(errText(e))
+          return false
+        }
+      }
+      return true
+    })()
+    flushInFlightRef.current = run
     try {
-      setSyncErr(null)
-      const maxSeq = await pushEventBatch(uid, batch)
-      if (maxSeq > lastSeqRef.current) lastSeqRef.current = maxSeq
-      savePendingOutgoing(uid, pendingRef.current)
-    } catch (e) {
-      pendingRef.current = [...batch, ...pendingRef.current]
-      savePendingOutgoing(uid, pendingRef.current)
-      setSyncErr(errText(e))
+      return await run
+    } finally {
+      if (flushInFlightRef.current === run) flushInFlightRef.current = null
     }
-  }, [session?.user])
+  }, [sessionUserId, setSyncErr])
 
   const dispatch = useCallback(
     (kind: string, payload: unknown, fixedClientId?: string) => {
@@ -580,9 +611,10 @@ export default function App() {
       )
       setHabits(next.habits)
       setCompletions(next.completions)
-      if (session?.user && supabaseConfigured && supabaseSyncPhase === 'ready') {
+      if (sessionUserId && supabaseConfigured) {
         pendingRef.current.push({ client_event_id, kind, payload })
-        savePendingOutgoing(session.user.id, pendingRef.current)
+        savePendingOutgoing(sessionUserId, pendingRef.current)
+        if (supabaseSyncPhase !== 'ready') return
         if (flushTimerRef.current !== undefined) {
           window.clearTimeout(flushTimerRef.current)
         }
@@ -592,7 +624,7 @@ export default function App() {
         }, 450)
       }
     },
-    [session?.user, supabaseSyncPhase, flushPendingInternal],
+    [sessionUserId, supabaseSyncPhase, flushPendingInternal],
   )
 
   const applyClockDate = useCallback(
@@ -625,49 +657,63 @@ export default function App() {
   }, [habits, dispatch])
 
   const pullIncremental = useCallback(async () => {
-    if (!session?.user || supabaseSyncPhase !== 'ready' || !supabase) return
-    const uid = session.user.id
-    try {
-      await flushPendingInternal()
-      const rows = await fetchAllEventsSince(uid, lastSeqRef.current)
-      if (rows.length === 0) return
-      const { state, lastSeq } = mergeRemoteEvents(
-        { habits: habitsRef.current, completions: completionsRef.current },
-        rows,
-      )
-      lastSeqRef.current = lastSeq
-      setHabits(state.habits)
-      setCompletions(state.completions)
-      setSyncErr(null)
-    } catch (e) {
-      if (isLikelyNetworkError(e)) {
-        setSyncErr(
-          'Сеть недоступна. Изменения сохраняются локально и синхронизируются при восстановлении связи.',
-        )
-        return
+      if (pullInFlightRef.current) return pullInFlightRef.current
+    const run = (async () => {
+      if (!sessionUserId || supabaseSyncPhase !== 'ready' || !supabase) return
+      const uid = sessionUserId
+      try {
+        const flushed = await flushPendingInternal()
+        const rows = await fetchAllEventsSince(uid, lastSeqRef.current)
+        if (rows.length > 0) {
+          const { state, lastSeq } = mergeRemoteEvents(
+            { habits: habitsRef.current, completions: completionsRef.current },
+            rows,
+          )
+          lastSeqRef.current = lastSeq
+          setHabits(state.habits)
+          setCompletions(state.completions)
+        }
+        if (flushed) setSyncErr(null)
+      } catch (e) {
+        if (isLikelyNetworkError(e)) {
+          setSyncErr(
+            'Сеть недоступна. Изменения сохраняются локально и синхронизируются при восстановлении связи.',
+          )
+          return
+        }
+        setSyncErr(errText(e))
       }
-      setSyncErr(errText(e))
+    })()
+    pullInFlightRef.current = run
+    try {
+      await run
+    } finally {
+      if (pullInFlightRef.current === run) pullInFlightRef.current = null
     }
-  }, [session?.user, supabaseSyncPhase, flushPendingInternal])
+  }, [sessionUserId, supabaseSyncPhase, flushPendingInternal, setSyncErr])
 
   useEffect(() => {
-    if (!session?.user || !supabaseConfigured) {
+    if (!sessionUserId || !supabaseConfigured) {
       setSupabaseSyncPhase('idle')
       lastSeqRef.current = 0
       pendingRef.current = []
+      flushInFlightRef.current = null
+      pullInFlightRef.current = null
       return
     }
+    const uid = sessionUserId
     let cancelled = false
     setSyncErr(null)
     setSupabaseSyncPhase('pulling')
-    pendingRef.current = loadPendingOutgoing(session.user.id)
+    pendingRef.current = loadPendingOutgoing(uid)
     void (async () => {
       try {
-        const { state, lastSeq } = await loadPersistedFromEvents(session.user.id)
+        const { state, lastSeq } = await loadPersistedFromEvents(uid)
         if (cancelled) return
         lastSeqRef.current = lastSeq
-        setHabits(state.habits)
-        setCompletions(state.completions)
+        const stateWithPending = applyPendingEvents(state, pendingRef.current)
+        setHabits(stateWithPending.habits)
+        setCompletions(stateWithPending.completions)
         if (!cancelled) setSupabaseSyncPhase('ready')
       } catch (e) {
         if (!cancelled) {
@@ -686,33 +732,48 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [session?.user?.id])
+  }, [sessionUserId])
 
   useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === 'visible') void pullIncremental()
       if (document.visibilityState === 'hidden') void flushPendingInternal()
     }
+    const onPageHide = () => {
+      void flushPendingInternal()
+    }
     document.addEventListener('visibilitychange', onVis)
-    return () => document.removeEventListener('visibilitychange', onVis)
+    window.addEventListener('pagehide', onPageHide)
+    return () => {
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('pagehide', onPageHide)
+    }
   }, [pullIncremental, flushPendingInternal])
 
   useEffect(() => {
-    if (!session?.user || supabaseSyncPhase !== 'ready') return
+    if (!sessionUserId || supabaseSyncPhase !== 'ready') return
+    void pullIncremental()
+    const onOnline = () => {
+      void pullIncremental()
+    }
     const t = window.setInterval(() => {
       void pullIncremental()
     }, 15000)
-    return () => window.clearInterval(t)
-  }, [session?.user?.id, supabaseSyncPhase, pullIncremental])
+    window.addEventListener('online', onOnline)
+    return () => {
+      window.clearInterval(t)
+      window.removeEventListener('online', onOnline)
+    }
+  }, [sessionUserId, supabaseSyncPhase, pullIncremental])
 
   useEffect(() => {
-    if (!session?.user || supabaseSyncPhase !== 'ready' || !supabaseConfigured)
+    if (!sessionUserId || supabaseSyncPhase !== 'ready' || !supabaseConfigured)
       return
-    const uid = session.user.id
+    const uid = sessionUserId
     return subscribeToSyncEvents(uid, () => {
       void pullIncremental()
     })
-  }, [session?.user?.id, supabaseSyncPhase, pullIncremental])
+  }, [sessionUserId, supabaseSyncPhase, pullIncremental])
 
   const dim = daysInMonth(y, m0)
   const today = new Date()

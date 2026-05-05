@@ -127,47 +127,32 @@ export async function fetchAllEventsSince(
 export async function pushEventBatch(
   userId: string,
   batch: PendingOutgoing[],
-): Promise<number> {
-  if (!supabase || batch.length === 0) return 0
+): Promise<void> {
+  if (!supabase || batch.length === 0) return
   const rows = batch.map((b) => ({
     user_id: userId,
     client_event_id: b.client_event_id,
     kind: b.kind,
     payload: b.payload,
   }))
-  const { data, error } = await supabase
-    .from('sync_events')
-    .insert(rows)
-    .select('seq')
-  if (!error) {
-    const seqs = (data as { seq: number }[]).map((r) => r.seq)
-    return seqs.length ? Math.max(...seqs) : 0
-  }
+  const { error } = await supabase.from('sync_events').insert(rows)
+  if (!error) return
 
   const code = (error as { code?: string }).code
   if (code !== '23505') throw error
 
-  let maxSeq = 0
   for (const b of batch) {
-    const { data: oneData, error: oneErr } = await supabase
-      .from('sync_events')
-      .insert({
-        user_id: userId,
-        client_event_id: b.client_event_id,
-        kind: b.kind,
-        payload: b.payload,
-      })
-      .select('seq')
-      .maybeSingle()
-    if (oneErr) {
-      const oneCode = (oneErr as { code?: string }).code
-      if (oneCode === '23505') continue
-      throw oneErr
-    }
-    const seq = (oneData as { seq?: number } | null)?.seq
-    if (typeof seq === 'number' && seq > maxSeq) maxSeq = seq
+    const { error: oneErr } = await supabase.from('sync_events').insert({
+      user_id: userId,
+      client_event_id: b.client_event_id,
+      kind: b.kind,
+      payload: b.payload,
+    })
+    if (!oneErr) continue
+    const oneCode = (oneErr as { code?: string }).code
+    if (oneCode === '23505') continue
+    throw oneErr
   }
-  return maxSeq
 }
 
 export async function loadPersistedFromEvents(
