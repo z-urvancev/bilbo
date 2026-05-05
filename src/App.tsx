@@ -85,6 +85,17 @@ function errText(e: unknown): string {
   return 'Ошибка запроса'
 }
 
+function isLikelyNetworkError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false
+  const msg = (e.message || '').toLowerCase()
+  return (
+    msg.includes('failed to fetch') ||
+    msg.includes('networkerror') ||
+    msg.includes('network request failed') ||
+    msg.includes('load failed')
+  )
+}
+
 const EMAIL_MAX_TOTAL = 320
 const EMAIL_MAX_LOCAL = 64
 const EMAIL_MAX_DOMAIN = 255
@@ -616,16 +627,27 @@ export default function App() {
   const pullIncremental = useCallback(async () => {
     if (!session?.user || supabaseSyncPhase !== 'ready' || !supabase) return
     const uid = session.user.id
-    await flushPendingInternal()
-    const rows = await fetchAllEventsSince(uid, lastSeqRef.current)
-    if (rows.length === 0) return
-    const { state, lastSeq } = mergeRemoteEvents(
-      { habits: habitsRef.current, completions: completionsRef.current },
-      rows,
-    )
-    lastSeqRef.current = lastSeq
-    setHabits(state.habits)
-    setCompletions(state.completions)
+    try {
+      await flushPendingInternal()
+      const rows = await fetchAllEventsSince(uid, lastSeqRef.current)
+      if (rows.length === 0) return
+      const { state, lastSeq } = mergeRemoteEvents(
+        { habits: habitsRef.current, completions: completionsRef.current },
+        rows,
+      )
+      lastSeqRef.current = lastSeq
+      setHabits(state.habits)
+      setCompletions(state.completions)
+      setSyncErr(null)
+    } catch (e) {
+      if (isLikelyNetworkError(e)) {
+        setSyncErr(
+          'Сеть недоступна. Изменения сохраняются локально и синхронизируются при восстановлении связи.',
+        )
+        return
+      }
+      setSyncErr(errText(e))
+    }
   }, [session?.user, supabaseSyncPhase, flushPendingInternal])
 
   useEffect(() => {
@@ -649,8 +671,15 @@ export default function App() {
         if (!cancelled) setSupabaseSyncPhase('ready')
       } catch (e) {
         if (!cancelled) {
-          setSyncErr(errText(e))
-          setSupabaseSyncPhase('idle')
+          if (isLikelyNetworkError(e)) {
+            setSyncErr(
+              'Сервер временно недоступен. Работаем локально, синхронизация продолжится автоматически.',
+            )
+            setSupabaseSyncPhase('ready')
+          } else {
+            setSyncErr(errText(e))
+            setSupabaseSyncPhase('idle')
+          }
         }
       }
     })()

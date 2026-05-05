@@ -139,13 +139,35 @@ export async function pushEventBatch(
     .from('sync_events')
     .insert(rows)
     .select('seq')
-  if (error) {
-    const code = (error as { code?: string }).code
-    if (code === '23505') return 0
-    throw error
+  if (!error) {
+    const seqs = (data as { seq: number }[]).map((r) => r.seq)
+    return seqs.length ? Math.max(...seqs) : 0
   }
-  const seqs = (data as { seq: number }[]).map((r) => r.seq)
-  return seqs.length ? Math.max(...seqs) : 0
+
+  const code = (error as { code?: string }).code
+  if (code !== '23505') throw error
+
+  let maxSeq = 0
+  for (const b of batch) {
+    const { data: oneData, error: oneErr } = await supabase
+      .from('sync_events')
+      .insert({
+        user_id: userId,
+        client_event_id: b.client_event_id,
+        kind: b.kind,
+        payload: b.payload,
+      })
+      .select('seq')
+      .maybeSingle()
+    if (oneErr) {
+      const oneCode = (oneErr as { code?: string }).code
+      if (oneCode === '23505') continue
+      throw oneErr
+    }
+    const seq = (oneData as { seq?: number } | null)?.seq
+    if (typeof seq === 'number' && seq > maxSeq) maxSeq = seq
+  }
+  return maxSeq
 }
 
 export async function loadPersistedFromEvents(
