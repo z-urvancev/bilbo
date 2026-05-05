@@ -1,4 +1,4 @@
-const CACHE = 'habit-cal-v2'
+const CACHE = 'habit-cal-v3'
 const PRECACHE = ['./index.html', './manifest.json', './apple-touch-icon.png']
 
 self.addEventListener('install', (e) => {

@@ -49,16 +49,14 @@ import {
 import { supabase, supabaseConfigured } from './lib/supabase'
 import {
   applyEvent,
-  fetchAllEventsSince,
   loadPersistedFromEvents,
-  mergeRemoteEvents,
   pushEventBatch,
   subscribeToSyncEvents,
   type PendingOutgoing,
 } from './supabase/sync'
 
-const STORAGE_KEY = 'habit-calendar-v1'
-const PENDING_KEY_PREFIX = 'habit-calendar-pending-v1:'
+const STORAGE_KEY = 'habit-calendar-v2'
+const PENDING_KEY_PREFIX = 'habit-calendar-pending-v2:'
 
 function errText(e: unknown): string {
   if (e == null) return 'Неизвестная ошибка'
@@ -479,7 +477,6 @@ export default function App() {
   const completionsRef = useRef(completions)
   habitsRef.current = habits
   completionsRef.current = completions
-  const lastSeqRef = useRef(0)
   const pendingRef = useRef<PendingOutgoing[]>([])
   const flushTimerRef = useRef<number | undefined>(undefined)
   const flushInFlightRef = useRef<Promise<boolean> | null>(null)
@@ -580,10 +577,11 @@ export default function App() {
       if (!sessionUserId || !supabase || pendingRef.current.length === 0) return true
       const uid = sessionUserId
       while (pendingRef.current.length > 0) {
-        const batch = pendingRef.current.slice()
+        const next = pendingRef.current[0]
+        if (!next) break
         try {
-          await pushEventBatch(uid, batch)
-          pendingRef.current = pendingRef.current.slice(batch.length)
+          await pushEventBatch(uid, [next])
+          pendingRef.current = pendingRef.current.slice(1)
           savePendingOutgoing(uid, pendingRef.current)
           setSyncErr(null)
         } catch (e) {
@@ -657,22 +655,16 @@ export default function App() {
   }, [habits, dispatch])
 
   const pullIncremental = useCallback(async () => {
-      if (pullInFlightRef.current) return pullInFlightRef.current
+    if (pullInFlightRef.current) return pullInFlightRef.current
     const run = (async () => {
       if (!sessionUserId || supabaseSyncPhase !== 'ready' || !supabase) return
       const uid = sessionUserId
       try {
         const flushed = await flushPendingInternal()
-        const rows = await fetchAllEventsSince(uid, lastSeqRef.current)
-        if (rows.length > 0) {
-          const { state, lastSeq } = mergeRemoteEvents(
-            { habits: habitsRef.current, completions: completionsRef.current },
-            rows,
-          )
-          lastSeqRef.current = lastSeq
-          setHabits(state.habits)
-          setCompletions(state.completions)
-        }
+        const { state } = await loadPersistedFromEvents(uid)
+        const stateWithPending = applyPendingEvents(state, pendingRef.current)
+        setHabits(stateWithPending.habits)
+        setCompletions(stateWithPending.completions)
         if (flushed) setSyncErr(null)
       } catch (e) {
         if (isLikelyNetworkError(e)) {
@@ -695,7 +687,6 @@ export default function App() {
   useEffect(() => {
     if (!sessionUserId || !supabaseConfigured) {
       setSupabaseSyncPhase('idle')
-      lastSeqRef.current = 0
       pendingRef.current = []
       flushInFlightRef.current = null
       pullInFlightRef.current = null
@@ -708,9 +699,8 @@ export default function App() {
     pendingRef.current = loadPendingOutgoing(uid)
     void (async () => {
       try {
-        const { state, lastSeq } = await loadPersistedFromEvents(uid)
+        const { state } = await loadPersistedFromEvents(uid)
         if (cancelled) return
-        lastSeqRef.current = lastSeq
         const stateWithPending = applyPendingEvents(state, pendingRef.current)
         setHabits(stateWithPending.habits)
         setCompletions(stateWithPending.completions)
