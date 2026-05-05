@@ -58,6 +58,7 @@ import {
 } from './supabase/sync'
 
 const STORAGE_KEY = 'habit-calendar-v1'
+const PENDING_KEY_PREFIX = 'habit-calendar-pending-v1:'
 
 function errText(e: unknown): string {
   if (e == null) return 'Неизвестная ошибка'
@@ -199,6 +200,30 @@ function loadPersisted(): Persisted {
 
 function savePersisted(p: Persisted) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(p))
+}
+
+function pendingStorageKey(userId: string): string {
+  return `${PENDING_KEY_PREFIX}${userId}`
+}
+
+function loadPendingOutgoing(userId: string): PendingOutgoing[] {
+  try {
+    const raw = localStorage.getItem(pendingStorageKey(userId))
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed as PendingOutgoing[]
+  } catch {
+    return []
+  }
+}
+
+function savePendingOutgoing(userId: string, queue: PendingOutgoing[]) {
+  if (queue.length === 0) {
+    localStorage.removeItem(pendingStorageKey(userId))
+    return
+  }
+  localStorage.setItem(pendingStorageKey(userId), JSON.stringify(queue))
 }
 
 function MiniCalendar() {
@@ -522,12 +547,15 @@ export default function App() {
     const uid = session.user.id
     const batch = [...pendingRef.current]
     pendingRef.current = []
+    savePendingOutgoing(uid, pendingRef.current)
     try {
       setSyncErr(null)
       const maxSeq = await pushEventBatch(uid, batch)
       if (maxSeq > lastSeqRef.current) lastSeqRef.current = maxSeq
+      savePendingOutgoing(uid, pendingRef.current)
     } catch (e) {
       pendingRef.current = [...batch, ...pendingRef.current]
+      savePendingOutgoing(uid, pendingRef.current)
       setSyncErr(errText(e))
     }
   }, [session?.user])
@@ -543,6 +571,7 @@ export default function App() {
       setCompletions(next.completions)
       if (session?.user && supabaseConfigured && supabaseSyncPhase === 'ready') {
         pendingRef.current.push({ client_event_id, kind, payload })
+        savePendingOutgoing(session.user.id, pendingRef.current)
         if (flushTimerRef.current !== undefined) {
           window.clearTimeout(flushTimerRef.current)
         }
@@ -609,7 +638,7 @@ export default function App() {
     let cancelled = false
     setSyncErr(null)
     setSupabaseSyncPhase('pulling')
-    pendingRef.current = []
+    pendingRef.current = loadPendingOutgoing(session.user.id)
     void (async () => {
       try {
         const { state, lastSeq } = await loadPersistedFromEvents(session.user.id)
@@ -633,10 +662,19 @@ export default function App() {
   useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === 'visible') void pullIncremental()
+      if (document.visibilityState === 'hidden') void flushPendingInternal()
     }
     document.addEventListener('visibilitychange', onVis)
     return () => document.removeEventListener('visibilitychange', onVis)
-  }, [pullIncremental])
+  }, [pullIncremental, flushPendingInternal])
+
+  useEffect(() => {
+    if (!session?.user || supabaseSyncPhase !== 'ready') return
+    const t = window.setInterval(() => {
+      void pullIncremental()
+    }, 15000)
+    return () => window.clearInterval(t)
+  }, [session?.user?.id, supabaseSyncPhase, pullIncremental])
 
   useEffect(() => {
     if (!session?.user || supabaseSyncPhase !== 'ready' || !supabaseConfigured)
@@ -1327,7 +1365,25 @@ export default function App() {
         </div>
       )}
 
-      {screen === 'habits' ? (
+      {!session?.user ? (
+      <main
+        className={`mx-auto max-w-3xl px-3 py-10 ${isMobile ? 'pb-28' : ''}`}
+      >
+        <div className="rounded-2xl border border-teal-200 bg-white p-6 text-center shadow-sm">
+          <h2 className="text-lg font-semibold text-teal-900">Нужна авторизация</h2>
+          <p className="mt-2 text-sm text-teal-800/80">
+            Трекер и редактирование привычек доступны только после входа.
+          </p>
+          <button
+            type="button"
+            onClick={() => setAuthModalOpen(true)}
+            className="mt-4 rounded-lg bg-teal-700 px-4 py-2 text-sm font-medium text-white hover:bg-teal-800"
+          >
+            Войти
+          </button>
+        </div>
+      </main>
+      ) : screen === 'habits' ? (
       <main
         className={`mx-auto max-w-3xl px-3 py-6 sm:py-8 ${
           isMobile ? 'pb-28' : ''
@@ -2452,7 +2508,7 @@ export default function App() {
       </main>
       )}
 
-      {screen === 'tracker' && !isMobile && (
+      {session?.user && screen === 'tracker' && !isMobile && (
         <button
           type="button"
           onClick={() => setModal(true)}
