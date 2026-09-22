@@ -1,4 +1,5 @@
 import type { Completions, Habit, Persisted } from '../types'
+import { parseSyncEventInput } from '../validation.ts'
 
 export type EventInput = {
   kind: string
@@ -14,16 +15,17 @@ function cloneCompletions(c: Completions): Completions {
 }
 
 export function applyEvent(state: Persisted, e: EventInput): Persisted {
-  switch (e.kind) {
+  const event = parseSyncEventInput(e.kind, e.payload)
+  switch (event.kind) {
     case 'state_snapshot': {
-      const p = e.payload as Persisted
+      const p = event.payload as Persisted
       return {
         habits: p.habits.map((h) => ({ ...h })),
         completions: cloneCompletions(p.completions),
       }
     }
     case 'habit_upsert': {
-      const h = e.payload as Habit
+      const h = event.payload as Habit
       const copy = { ...h }
       const i = state.habits.findIndex((x) => x.id === copy.id)
       const habits =
@@ -32,19 +34,35 @@ export function applyEvent(state: Persisted, e: EventInput): Persisted {
           : [...state.habits, copy]
       return { ...state, habits }
     }
+    case 'habit_patch': {
+      const { id, changes } = event.payload as {
+        id: string
+        changes: Partial<Habit> & { createdAt?: string | null }
+      }
+      const current = state.habits.find((habit) => habit.id === id)
+      if (!current) return state
+      const candidate: Record<string, unknown> = { ...current, ...changes }
+      if (changes.createdAt === null) delete candidate.createdAt
+      const patched = parseSyncEventInput('habit_upsert', candidate).payload as Habit
+      return {
+        ...state,
+        habits: state.habits.map((habit) => (habit.id === id ? patched : habit)),
+      }
+    }
     case 'habit_delete': {
-      const { id } = e.payload as { id: string }
+      const { id } = event.payload as { id: string }
       const habits = state.habits.filter((x) => x.id !== id)
       const completions = { ...state.completions }
       delete completions[id]
       return { habits, completions }
     }
     case 'mark_set': {
-      const { habitId, dayKey, marked } = e.payload as {
+      const { habitId, dayKey, marked } = event.payload as {
         habitId: string
         dayKey: string
         marked: boolean
       }
+      if (!state.habits.some((habit) => habit.id === habitId)) return state
       const prevMap = state.completions[habitId] ?? {}
       const nextMap = { ...prevMap }
       if (marked) nextMap[dayKey] = true

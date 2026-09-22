@@ -50,14 +50,33 @@ import { supabase, supabaseConfigured } from './lib/supabase'
 import {
   applyEvent,
   fetchServerSyncVersion,
+  isPermanentSyncError,
+  isSyncConflictError,
+  isSyncNeedsRebaseError,
   loadPersistedFromEvents,
   pushEventBatch,
   subscribeToSyncEvents,
   type PendingOutgoing,
 } from './supabase/sync'
+import {
+  acknowledgePendingHead,
+  convertHabitUpsertToPatch,
+  nextExpectedRevision,
+  normalizePendingOperations,
+  rebasePendingItems,
+  type PendingQueue,
+} from './supabase/pendingQueue'
+import {
+  DataValidationError,
+  parsePendingOutgoing,
+  parsePersisted,
+  parseSyncEventInput,
+} from './validation'
 
 const STORAGE_KEY = 'habit-calendar-v2'
 const PENDING_KEY_PREFIX = 'habit-calendar-pending-v2:'
+const DEAD_LETTER_KEY_PREFIX = 'habit-calendar-pending-dead-letter-v2:'
+const INVALID_STORAGE_KEY_PREFIX = 'habit-calendar-invalid-v2:'
 
 function errText(e: unknown): string {
   if (e == null) return 'Неизвестная ошибка'
@@ -201,49 +220,98 @@ function WeekDot({
 function loadPersisted(): Persisted {
   try {
     const r = localStorage.getItem(STORAGE_KEY)
-    if (r) return JSON.parse(r) as Persisted
+    if (r) return parsePersisted(JSON.parse(r), 'localStorage')
   } catch {
-    void 0
+    try {
+      const invalid = localStorage.getItem(STORAGE_KEY)
+      if (invalid) {
+        localStorage.setItem(`${INVALID_STORAGE_KEY_PREFIX}${Date.now()}`, invalid)
+        localStorage.removeItem(STORAGE_KEY)
+      }
+    } catch {
+      void 0
+    }
   }
   return buildSeed(new Date())
 }
 
 function savePersisted(p: Persisted) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(p))
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(p))
+  } catch {
+    void 0
+  }
 }
 
 function pendingStorageKey(userId: string): string {
   return `${PENDING_KEY_PREFIX}${userId}`
 }
 
-function isPendingOutgoing(value: unknown): value is PendingOutgoing {
-  if (!value || typeof value !== 'object') return false
-  const item = value as Partial<PendingOutgoing>
-  return (
-    typeof item.client_event_id === 'string' &&
-    typeof item.kind === 'string' &&
-    'payload' in item
-  )
+function deadLetterStorageKey(userId: string): string {
+  return `${DEAD_LETTER_KEY_PREFIX}${userId}`
+}
+
+function quarantinePendingOutgoing(
+  userId: string,
+  value: unknown,
+  reason: string,
+) {
+  try {
+    const key = deadLetterStorageKey(userId)
+    const raw = localStorage.getItem(key)
+    const previous = raw ? JSON.parse(raw) : []
+    const entries = Array.isArray(previous) ? previous : []
+    entries.push({ rejectedAt: new Date().toISOString(), reason, value })
+    localStorage.setItem(key, JSON.stringify(entries.slice(-50)))
+  } catch {
+    void 0
+  }
 }
 
 function loadPendingOutgoing(userId: string): PendingOutgoing[] {
+  let raw: string | null = null
   try {
-    const raw = localStorage.getItem(pendingStorageKey(userId))
+    raw = localStorage.getItem(pendingStorageKey(userId))
     if (!raw) return []
     const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter(isPendingOutgoing)
-  } catch {
+    if (!Array.isArray(parsed)) {
+      quarantinePendingOutgoing(userId, parsed, 'Очередь должна быть массивом')
+      savePendingOutgoing(userId, [])
+      return []
+    }
+    const valid: PendingOutgoing[] = []
+    for (const value of parsed) {
+      try {
+        valid.push(parsePendingOutgoing(value))
+      } catch (error) {
+        quarantinePendingOutgoing(userId, value, errText(error))
+      }
+    }
+    if (valid.length !== parsed.length) savePendingOutgoing(userId, valid)
+    return valid
+  } catch (error) {
+    if (raw !== null) {
+      quarantinePendingOutgoing(userId, raw, errText(error))
+      try {
+        savePendingOutgoing(userId, [])
+      } catch {
+        void 0
+      }
+    }
     return []
   }
 }
 
 function savePendingOutgoing(userId: string, queue: PendingOutgoing[]) {
-  if (queue.length === 0) {
-    localStorage.removeItem(pendingStorageKey(userId))
-    return
+  try {
+    if (queue.length === 0) {
+      localStorage.removeItem(pendingStorageKey(userId))
+      return
+    }
+    localStorage.setItem(pendingStorageKey(userId), JSON.stringify(queue))
+  } catch {
+    void 0
   }
-  localStorage.setItem(pendingStorageKey(userId), JSON.stringify(queue))
 }
 
 function applyPendingEvents(state: Persisted, queue: PendingOutgoing[]): Persisted {
@@ -441,9 +509,10 @@ function effectiveGoalForPeriod(
 }
 
 export default function App() {
-  const [habits, setHabits] = useState<Habit[]>(() => loadPersisted().habits)
+  const [initialPersisted] = useState(loadPersisted)
+  const [habits, setHabits] = useState<Habit[]>(initialPersisted.habits)
   const [completions, setCompletions] = useState<Completions>(
-    () => loadPersisted().completions,
+    initialPersisted.completions,
   )
   const [screen, setScreen] = useState<Screen>('tracker')
   const [dynMode, setDynMode] = useState<DynMode>('week')
@@ -485,21 +554,38 @@ export default function App() {
     'idle' | 'pulling' | 'ready'
   >('idle')
   const [exportIncludeProgress, setExportIncludeProgress] = useState(true)
+  const sessionUserId = session?.user?.id
   const habitsRef = useRef(habits)
   const completionsRef = useRef(completions)
-  habitsRef.current = habits
-  completionsRef.current = completions
-  const pendingRef = useRef<PendingOutgoing[]>([])
+  const sessionUserIdRef = useRef<string | undefined>(sessionUserId)
+  const pendingQueuesRef = useRef<Map<string, PendingQueue>>(new Map())
   const flushTimerRef = useRef<number | undefined>(undefined)
-  const flushInFlightRef = useRef<Promise<boolean> | null>(null)
-  const pullInFlightRef = useRef<Promise<void> | null>(null)
-  const serverVersionRef = useRef<string | null>(null)
+  const flushInFlightRef = useRef<Map<string, Promise<boolean>>>(new Map())
+  const pullInFlightRef = useRef<Map<string, Promise<void>>>(new Map())
+  const serverVersionRef = useRef<Map<string, string | null>>(new Map())
+  const serverRevisionRef = useRef<Map<string, number>>(new Map())
   const goalDebouncersRef = useRef<Record<string, number>>({})
   const authMenuRootRef = useRef<HTMLDivElement | null>(null)
   const [calendarTarget, setCalendarTarget] = useState<CalendarTarget | null>(null)
   const [calendarY, setCalendarY] = useState(now.getFullYear())
   const [calendarM0, setCalendarM0] = useState(now.getMonth())
-  const sessionUserId = session?.user?.id
+
+  const getPendingQueue = useCallback((userId: string): PendingQueue => {
+    const existing = pendingQueuesRef.current.get(userId)
+    if (existing) return existing
+    const queue = { userId, items: loadPendingOutgoing(userId) }
+    pendingQueuesRef.current.set(userId, queue)
+    return queue
+  }, [])
+
+  useEffect(() => {
+    habitsRef.current = habits
+    completionsRef.current = completions
+  }, [habits, completions])
+
+  useEffect(() => {
+    sessionUserIdRef.current = sessionUserId
+  }, [sessionUserId])
 
   useEffect(() => {
     if (!authModalOpen) {
@@ -585,46 +671,116 @@ export default function App() {
   }, [moreMenuHabitId, clockMenuHabitId])
 
   const flushPendingInternal = useCallback(async (): Promise<boolean> => {
-    if (flushInFlightRef.current) return flushInFlightRef.current
+    if (!sessionUserId || !supabase) return true
+    const uid = sessionUserId
+    const existingRun = flushInFlightRef.current.get(uid)
+    if (existingRun) return existingRun
+    const queue = getPendingQueue(uid)
     const run = (async () => {
-      if (!sessionUserId || !supabase || pendingRef.current.length === 0) return true
-      const uid = sessionUserId
-      while (pendingRef.current.length > 0) {
-        const next = pendingRef.current[0]
+      let needsPull = false
+      while (queue.items.length > 0) {
+        const next = queue.items[0]
         if (!next) break
         try {
-          await pushEventBatch(uid, [next])
-          pendingRef.current = pendingRef.current.slice(1)
-          savePendingOutgoing(uid, pendingRef.current)
-          setSyncErr(null)
+          const result = await pushEventBatch(uid, [next])
+          if (!result) return false
+          if (!acknowledgePendingHead(queue, next.client_event_id)) return false
+          queue.items = rebasePendingItems(queue.items, result.revision)
+          savePendingOutgoing(uid, queue.items)
+          serverRevisionRef.current.set(uid, result.revision)
+          if (result.applied) {
+            serverVersionRef.current.set(uid, result.version)
+          } else {
+            serverVersionRef.current.set(uid, null)
+            needsPull = true
+          }
+          if (sessionUserIdRef.current === uid) setSyncErr(null)
         } catch (e) {
-          savePendingOutgoing(uid, pendingRef.current)
-          setSyncErr(errText(e))
+          if (isPermanentSyncError(e)) {
+            acknowledgePendingHead(queue, next.client_event_id)
+            const baseRevision =
+              next.expected_revision ?? serverRevisionRef.current.get(uid)
+            if (baseRevision !== undefined) {
+              queue.items = rebasePendingItems(queue.items, baseRevision)
+            }
+            savePendingOutgoing(uid, queue.items)
+            quarantinePendingOutgoing(uid, next, errText(e))
+            serverVersionRef.current.set(uid, null)
+            needsPull = true
+            if (sessionUserIdRef.current === uid) {
+              setSyncErr(`Одно некорректное изменение пропущено: ${errText(e)}`)
+            }
+            continue
+          }
+          savePendingOutgoing(uid, queue.items)
+          if (sessionUserIdRef.current === uid) {
+            if (isSyncConflictError(e) || isSyncNeedsRebaseError(e)) {
+              setSyncErr('Обнаружены параллельные изменения. Перестраиваем очередь.')
+            } else {
+              setSyncErr(errText(e))
+            }
+          }
           return false
         }
       }
-      return true
+      return !needsPull
     })()
-    flushInFlightRef.current = run
+    flushInFlightRef.current.set(uid, run)
     try {
       return await run
     } finally {
-      if (flushInFlightRef.current === run) flushInFlightRef.current = null
+      if (flushInFlightRef.current.get(uid) === run) {
+        flushInFlightRef.current.delete(uid)
+      }
     }
-  }, [sessionUserId, setSyncErr])
+  }, [sessionUserId, getPendingQueue, setSyncErr])
 
   const dispatch = useCallback(
     (kind: string, payload: unknown, fixedClientId?: string) => {
       const client_event_id = fixedClientId ?? crypto.randomUUID()
+      let event: ReturnType<typeof parseSyncEventInput>
+      try {
+        event = parseSyncEventInput(kind, payload)
+        if (event.kind === 'habit_upsert') {
+          const desired = event.payload as Habit
+          const current = habitsRef.current.find((habit) => habit.id === desired.id)
+          const normalized = current
+            ? convertHabitUpsertToPatch(
+                { client_event_id, kind: event.kind, payload: event.payload },
+                current,
+              )
+            : { client_event_id, kind: event.kind, payload: event.payload }
+          if (!normalized) return
+          event = parseSyncEventInput(
+            normalized.kind,
+            normalized.payload,
+          )
+        }
+      } catch (error) {
+        if (error instanceof DataValidationError) setSyncErr(error.message)
+        return
+      }
       const next = applyEvent(
         { habits: habitsRef.current, completions: completionsRef.current },
-        { kind, payload },
+        event,
       )
+      habitsRef.current = next.habits
+      completionsRef.current = next.completions
       setHabits(next.habits)
       setCompletions(next.completions)
       if (sessionUserId && supabaseConfigured) {
-        pendingRef.current.push({ client_event_id, kind, payload })
-        savePendingOutgoing(sessionUserId, pendingRef.current)
+        const queue = getPendingQueue(sessionUserId)
+        const serverRevision = serverRevisionRef.current.get(sessionUserId) ?? null
+        const expectedRevision = nextExpectedRevision(queue.items, serverRevision)
+        queue.items.push({
+          client_event_id,
+          kind: event.kind,
+          payload: event.payload,
+          ...(expectedRevision === undefined
+            ? {}
+            : { expected_revision: expectedRevision }),
+        })
+        savePendingOutgoing(sessionUserId, queue.items)
         if (supabaseSyncPhase !== 'ready') return
         if (flushTimerRef.current !== undefined) {
           window.clearTimeout(flushTimerRef.current)
@@ -635,7 +791,13 @@ export default function App() {
         }, 450)
       }
     },
-    [sessionUserId, supabaseSyncPhase, flushPendingInternal],
+    [
+      sessionUserId,
+      supabaseSyncPhase,
+      flushPendingInternal,
+      getPendingQueue,
+      setSyncErr,
+    ],
   )
 
   const applyClockDate = useCallback(
@@ -668,19 +830,31 @@ export default function App() {
   }, [habits, dispatch])
 
   const pullIncremental = useCallback(async () => {
-    if (pullInFlightRef.current) return pullInFlightRef.current
+    if (!sessionUserId || supabaseSyncPhase !== 'ready' || !supabase) return
+    const uid = sessionUserId
+    const existingRun = pullInFlightRef.current.get(uid)
+    if (existingRun) return existingRun
+    const queue = getPendingQueue(uid)
     const run = (async () => {
-      if (!sessionUserId || supabaseSyncPhase !== 'ready' || !supabase) return
-      const uid = sessionUserId
       try {
-        const flushed = await flushPendingInternal()
-        const { state, version } = await loadPersistedFromEvents(uid)
-        serverVersionRef.current = version
-        const stateWithPending = applyPendingEvents(state, pendingRef.current)
+        await flushPendingInternal()
+        const { state, version, revision } = await loadPersistedFromEvents(uid)
+        queue.items = normalizePendingOperations(queue.items, state, (item, reason) => {
+          quarantinePendingOutgoing(uid, item, reason)
+        })
+        queue.items = rebasePendingItems(queue.items, revision)
+        savePendingOutgoing(uid, queue.items)
+        serverVersionRef.current.set(uid, version)
+        serverRevisionRef.current.set(uid, revision)
+        if (sessionUserIdRef.current !== uid) return
+        const stateWithPending = applyPendingEvents(state, queue.items)
+        habitsRef.current = stateWithPending.habits
+        completionsRef.current = stateWithPending.completions
         setHabits(stateWithPending.habits)
         setCompletions(stateWithPending.completions)
-        if (flushed) setSyncErr(null)
+        setSyncErr(null)
       } catch (e) {
+        if (sessionUserIdRef.current !== uid) return
         if (isLikelyNetworkError(e)) {
           setSyncErr(
             'Сеть недоступна. Изменения сохраняются локально и синхронизируются при восстановлении связи.',
@@ -690,28 +864,39 @@ export default function App() {
         setSyncErr(errText(e))
       }
     })()
-    pullInFlightRef.current = run
+    pullInFlightRef.current.set(uid, run)
     try {
       await run
     } finally {
-      if (pullInFlightRef.current === run) pullInFlightRef.current = null
+      if (pullInFlightRef.current.get(uid) === run) {
+        pullInFlightRef.current.delete(uid)
+      }
     }
-  }, [sessionUserId, supabaseSyncPhase, flushPendingInternal, setSyncErr])
+  }, [
+    sessionUserId,
+    supabaseSyncPhase,
+    flushPendingInternal,
+    getPendingQueue,
+    setSyncErr,
+  ])
 
   const checkServerFreshness = useCallback(async () => {
     if (!sessionUserId || supabaseSyncPhase !== 'ready' || !supabase) return
-    if (pendingRef.current.length > 0) {
+    const uid = sessionUserId
+    const queue = getPendingQueue(uid)
+    if (queue.items.length > 0) {
       await pullIncremental()
       return
     }
     try {
-      const version = await fetchServerSyncVersion(sessionUserId)
-      if (!version || version !== serverVersionRef.current) {
+      const version = await fetchServerSyncVersion(uid)
+      if (!version || version !== serverVersionRef.current.get(uid)) {
         await pullIncremental()
-      } else {
+      } else if (sessionUserIdRef.current === uid) {
         setSyncErr(null)
       }
     } catch (e) {
+      if (sessionUserIdRef.current !== uid) return
       if (isLikelyNetworkError(e)) {
         setSyncErr(
           'Сеть недоступна. Изменения сохраняются локально и синхронизируются при восстановлении связи.',
@@ -720,28 +905,42 @@ export default function App() {
       }
       setSyncErr(errText(e))
     }
-  }, [sessionUserId, supabaseSyncPhase, pullIncremental, setSyncErr])
+  }, [
+    sessionUserId,
+    supabaseSyncPhase,
+    pullIncremental,
+    getPendingQueue,
+    setSyncErr,
+  ])
 
   useEffect(() => {
     if (!sessionUserId || !supabaseConfigured) {
       setSupabaseSyncPhase('idle')
-      pendingRef.current = []
-      flushInFlightRef.current = null
-      pullInFlightRef.current = null
-      serverVersionRef.current = null
+      if (flushTimerRef.current !== undefined) {
+        window.clearTimeout(flushTimerRef.current)
+        flushTimerRef.current = undefined
+      }
       return
     }
     const uid = sessionUserId
+    const queue = getPendingQueue(uid)
     let cancelled = false
     setSyncErr(null)
     setSupabaseSyncPhase('pulling')
-    pendingRef.current = loadPendingOutgoing(uid)
     void (async () => {
       try {
-        const { state, version } = await loadPersistedFromEvents(uid)
-        if (cancelled) return
-        serverVersionRef.current = version
-        const stateWithPending = applyPendingEvents(state, pendingRef.current)
+        const { state, version, revision } = await loadPersistedFromEvents(uid)
+        queue.items = normalizePendingOperations(queue.items, state, (item, reason) => {
+          quarantinePendingOutgoing(uid, item, reason)
+        })
+        queue.items = rebasePendingItems(queue.items, revision)
+        savePendingOutgoing(uid, queue.items)
+        serverVersionRef.current.set(uid, version)
+        serverRevisionRef.current.set(uid, revision)
+        if (cancelled || sessionUserIdRef.current !== uid) return
+        const stateWithPending = applyPendingEvents(state, queue.items)
+        habitsRef.current = stateWithPending.habits
+        completionsRef.current = stateWithPending.completions
         setHabits(stateWithPending.habits)
         setCompletions(stateWithPending.completions)
         if (!cancelled) setSupabaseSyncPhase('ready')
@@ -762,7 +961,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [sessionUserId])
+  }, [sessionUserId, getPendingQueue])
 
   useEffect(() => {
     const onVis = () => {

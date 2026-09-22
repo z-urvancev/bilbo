@@ -8,7 +8,11 @@ pnpm-debug.log*
 lerna-debug.log*
 
 data/
-/supabase/
+supabase/.temp/
+supabase/.branches/
+supabase/.DS_Store
+supabase/archive/
+supabase/schema.sql
 node_modules
 dist
 dist-ssr

@@ -1,18 +1,21 @@
 import type { Completions, Habit, Persisted } from '../types'
 import { buildSeed } from '../seed'
 import { supabase } from '../lib/supabase'
+import {
+  DataValidationError,
+  parseHabit,
+  parsePendingOutgoing,
+  type PendingOutgoing,
+} from '../validation'
 import { applyEvent } from './eventReducer'
+import { collectAllPages } from './pagination'
+
+export type { PendingOutgoing } from '../validation'
 
 export type SyncEventRow = {
   seq: number
   user_id: string
   occurred_at: string
-  client_event_id: string
-  kind: string
-  payload: unknown
-}
-
-export type PendingOutgoing = {
   client_event_id: string
   kind: string
   payload: unknown
@@ -37,13 +40,62 @@ type DbHabitRow = {
 
 type DbMarkRow = {
   habit_id: string
-  user_id: string
+  user_id?: string
   day: string
   marked?: boolean | null
 }
 
+type SyncMeta = {
+  revision: number
+  updatedAt: string
+}
+
+export type PushBatchResult = {
+  applied: boolean
+  revision: number
+  version: string
+}
+
+export class SyncConflictError extends Error {
+  constructor(message = 'Данные на сервере изменились. Очередь будет перестроена.') {
+    super(message)
+    this.name = 'SyncConflictError'
+  }
+}
+
+export class PermanentSyncError extends Error {
+  readonly causeValue: unknown
+
+  constructor(message: string, causeValue?: unknown) {
+    super(message)
+    this.name = 'PermanentSyncError'
+    this.causeValue = causeValue
+  }
+}
+
+export class SyncNeedsRebaseError extends Error {
+  constructor() {
+    super('Очередь синхронизации не привязана к версии сервера')
+    this.name = 'SyncNeedsRebaseError'
+  }
+}
+
+export function isSyncConflictError(error: unknown): error is SyncConflictError {
+  return error instanceof SyncConflictError
+}
+
+export function isPermanentSyncError(error: unknown): error is PermanentSyncError {
+  return error instanceof PermanentSyncError
+}
+
+export function isSyncNeedsRebaseError(error: unknown): error is SyncNeedsRebaseError {
+  return error instanceof SyncNeedsRebaseError
+}
+
 const HABIT_SELECT =
   'id,user_id,name,emoji,negative,monthly_goal,goal_period,is_priority,created_day,created_at,archived,deadline,postponed_until,deleted_at'
+const PAGE_SIZE = 500
+const CONSISTENT_READ_ATTEMPTS = 3
 
 function dateOrNull(value: unknown): string | null {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
@@ -51,82 +103,94 @@ function dateOrNull(value: unknown): string | null {
     : null
 }
 
-function habitFromRow(r: DbHabitRow): Habit {
-  const createdAt = dateOrNull(r.created_day)
-  return {
-    id: r.id,
-    name: r.name,
-    emoji: r.emoji,
-    negative: r.negative,
-    monthlyGoal: r.monthly_goal,
-    goalPeriod: r.goal_period === 'week' ? 'week' : 'month',
-    isPriority: r.is_priority === true,
-    createdAt: createdAt ?? undefined,
-    archived: r.archived ?? false,
-    deadline: r.deadline ?? null,
-    postponedUntil: r.postponed_until ?? null,
-  }
-}
-
-function habitToRow(userId: string, h: Habit) {
-  return {
-    id: h.id,
-    user_id: userId,
-    name: h.name,
-    emoji: h.emoji || '🎯',
-    negative: h.negative,
-    monthly_goal: h.monthlyGoal,
-    goal_period: h.goalPeriod === 'week' ? 'week' : 'month',
-    is_priority: h.isPriority === true,
-    created_day: dateOrNull(h.createdAt),
-    archived: h.archived === true,
-    deadline: dateOrNull(h.deadline),
-    postponed_until: dateOrNull(h.postponedUntil),
-    deleted_at: null,
-  }
+function habitFromRow(row: DbHabitRow): Habit {
+  const createdAt = dateOrNull(row.created_day)
+  return parseHabit({
+    id: row.id,
+    name: row.name,
+    emoji: row.emoji,
+    negative: row.negative,
+    monthlyGoal: row.monthly_goal,
+    goalPeriod: row.goal_period === 'week' ? 'week' : 'month',
+    isPriority: row.is_priority === true,
+    ...(createdAt === null ? {} : { createdAt }),
+    archived: row.archived ?? false,
+    deadline: row.deadline ?? null,
+    postponedUntil: row.postponed_until ?? null,
+  })
 }
 
 function completionsFromMarks(rows: DbMarkRow[]): Completions {
-  const c: Completions = {}
+  const completions: Completions = {}
   for (const row of rows) {
     if (row.marked === false) continue
-    if (!c[row.habit_id]) c[row.habit_id] = {}
-    c[row.habit_id]![row.day] = true
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(row.day)) {
+      throw new DataValidationError(`Сервер вернул некорректную дату отметки: ${row.day}`)
+    }
+    if (!completions[row.habit_id]) completions[row.habit_id] = {}
+    completions[row.habit_id]![row.day] = true
   }
-  return c
+  return completions
+}
+
+async function fetchAllLiveHabits(userId: string): Promise<DbHabitRow[]> {
+  const client = supabase
+  if (!client) return []
+  return collectAllPages(async (from, to) => {
+    const { data, error } = await client
+      .from('habits')
+      .select(HABIT_SELECT)
+      .eq('user_id', userId)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to)
+    if (error) throw error
+    return (data ?? []) as DbHabitRow[]
+  }, PAGE_SIZE)
+}
+
+async function fetchAllActiveMarks(userId: string): Promise<DbMarkRow[]> {
+  const client = supabase
+  if (!client) return []
+  return collectAllPages(async (from, to) => {
+    const { data, error } = await client
+      .from('habit_marks')
+      .select('habit_id,user_id,day,marked')
+      .eq('user_id', userId)
+      .eq('marked', true)
+      .order('habit_id', { ascending: true })
+      .order('day', { ascending: true })
+      .range(from, to)
+    if (error) throw error
+    return (data ?? []) as DbMarkRow[]
+  }, PAGE_SIZE)
 }
 
 async function legacyPullPersisted(userId: string): Promise<Persisted | null> {
   if (!supabase) return null
-  const { data: hRows, error: e1 } = await supabase
-    .from('habits')
-    .select(HABIT_SELECT)
-    .eq('user_id', userId)
-    .is('deleted_at', null)
-  if (e1) {
-    const code = (e1 as { code?: string }).code
+  let habitsRows: DbHabitRow[]
+  try {
+    habitsRows = await fetchAllLiveHabits(userId)
+  } catch (error) {
+    const code = (error as { code?: string }).code
     if (code === '42P01' || code === 'PGRST205') return null
-    throw e1
+    throw error
   }
-  if (!hRows?.length) return null
-  const { data: mRows, error: e2 } = await supabase
-    .from('habit_marks')
-    .select('habit_id,user_id,day,marked')
-    .eq('user_id', userId)
-    .eq('marked', true)
-  if (e2) {
-    const code = (e2 as { code?: string }).code
-    if (code === '42P01' || code === 'PGRST205') {
-      return {
-        habits: (hRows as DbHabitRow[]).map(habitFromRow),
-        completions: {},
-      }
+  if (habitsRows.length === 0) return null
+  try {
+    const markRows = await fetchAllActiveMarks(userId)
+    return {
+      habits: habitsRows.map(habitFromRow),
+      completions: completionsFromMarks(markRows),
     }
-    throw e2
+  } catch (error) {
+    const code = (error as { code?: string }).code
+    if (code === '42P01' || code === 'PGRST205') {
+      return { habits: habitsRows.map(habitFromRow), completions: {} }
+    }
+    throw error
   }
-  const habits = (hRows as DbHabitRow[]).map(habitFromRow)
-  const completions = completionsFromMarks((mRows ?? []) as DbMarkRow[])
-  return { habits, completions }
 }
 
 async function fetchEventsPage(
@@ -170,241 +234,178 @@ async function loadPersistedFromEventLog(userId: string): Promise<Persisted | nu
   if (events.length === 0) return null
   let state: Persisted = { habits: [], completions: {} }
   for (const row of events) {
-    state = applyEvent(state, { kind: row.kind, payload: row.payload })
+    try {
+      state = applyEvent(state, { kind: row.kind, payload: row.payload })
+    } catch (error) {
+      if (error instanceof DataValidationError) continue
+      throw error
+    }
   }
   return state
 }
 
-async function fetchServerPersisted(userId: string): Promise<Persisted> {
-  if (!supabase) return buildSeed(new Date())
-  const { data: hRows, error: e1 } = await supabase
-    .from('habits')
-    .select(HABIT_SELECT)
-    .eq('user_id', userId)
-    .is('deleted_at', null)
-    .order('created_at', { ascending: true })
-  if (e1) throw e1
-  const { data: mRows, error: e2 } = await supabase
-    .from('habit_marks')
-    .select('habit_id,user_id,day,marked')
-    .eq('user_id', userId)
-    .eq('marked', true)
-  if (e2) throw e2
-  return {
-    habits: ((hRows ?? []) as DbHabitRow[]).map(habitFromRow),
-    completions: completionsFromMarks((mRows ?? []) as DbMarkRow[]),
-  }
-}
-
-async function upsertServerHabit(userId: string, habit: Habit) {
-  if (!supabase) return
-  const { error } = await supabase
-    .from('habits')
-    .upsert(habitToRow(userId, habit), { onConflict: 'user_id,id' })
-  if (error) throw error
-}
-
-async function softDeleteServerHabit(userId: string, id: string) {
-  if (!supabase) return
-  const now = new Date().toISOString()
-  const { error: hErr } = await supabase
-    .from('habits')
-    .update({ deleted_at: now, archived: true })
-    .eq('user_id', userId)
-    .eq('id', id)
-  if (hErr) throw hErr
-  const { error: mErr } = await supabase
-    .from('habit_marks')
-    .update({ marked: false })
-    .eq('user_id', userId)
-    .eq('habit_id', id)
-  if (mErr) throw mErr
-}
-
-async function upsertServerMark(
-  userId: string,
-  habitId: string,
-  dayKey: string,
-  marked: boolean,
-) {
-  if (!supabase) return
-  const { error } = await supabase
-    .from('habit_marks')
-    .upsert(
-      {
-        user_id: userId,
-        habit_id: habitId,
-        day: dayKey,
-        marked,
-      },
-      { onConflict: 'user_id,habit_id,day' },
-    )
-  if (error) throw error
-}
-
-async function replaceServerState(userId: string, state: Persisted) {
-  if (!supabase) return
-  const habitRows = state.habits.map((h) => habitToRow(userId, h))
-  if (habitRows.length > 0) {
-    const { error } = await supabase
-      .from('habits')
-      .upsert(habitRows, { onConflict: 'user_id,id' })
-    if (error) throw error
-  }
-
-  const liveHabitIds = new Set(state.habits.map((h) => h.id))
-  const { data: existingHabits, error: e1 } = await supabase
-    .from('habits')
-    .select('id')
-    .eq('user_id', userId)
-    .is('deleted_at', null)
-  if (e1) throw e1
-  for (const row of (existingHabits ?? []) as { id: string }[]) {
-    if (liveHabitIds.has(row.id)) continue
-    await softDeleteServerHabit(userId, row.id)
-  }
-
-  const desiredMarkKeys = new Set<string>()
-  const markRows: Array<{
-    user_id: string
-    habit_id: string
-    day: string
-    marked: boolean
-  }> = []
-  for (const habit of state.habits) {
-    const days = state.completions[habit.id] ?? {}
-    for (const day of Object.keys(days)) {
-      if (!days[day]) continue
-      desiredMarkKeys.add(`${habit.id}\n${day}`)
-      markRows.push({
-        user_id: userId,
-        habit_id: habit.id,
-        day,
-        marked: true,
-      })
-    }
-  }
-
-  const { data: existingMarks, error: e2 } = await supabase
-    .from('habit_marks')
-    .select('habit_id,day')
-    .eq('user_id', userId)
-    .eq('marked', true)
-  if (e2) throw e2
-  for (const row of (existingMarks ?? []) as DbMarkRow[]) {
-    if (desiredMarkKeys.has(`${row.habit_id}\n${row.day}`)) continue
-    await upsertServerMark(userId, row.habit_id, row.day, false)
-  }
-
-  if (markRows.length > 0) {
-    const { error } = await supabase
-      .from('habit_marks')
-      .upsert(markRows, { onConflict: 'user_id,habit_id,day' })
-    if (error) throw error
-  }
-}
-
-async function touchServerSyncMeta(userId: string) {
-  if (!supabase) return
-  const { error } = await supabase
-    .from('calendar_sync_meta')
-    .upsert(
-      {
-        user_id: userId,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'user_id' },
-    )
-  if (error) throw error
-}
-
-export async function fetchServerSyncVersion(userId: string): Promise<string | null> {
+async function fetchSyncMeta(userId: string): Promise<SyncMeta | null> {
   if (!supabase) return null
   const { data, error } = await supabase
     .from('calendar_sync_meta')
-    .select('updated_at')
+    .select('revision,updated_at')
     .eq('user_id', userId)
     .maybeSingle()
   if (error) throw error
-  const updatedAt = (data as { updated_at?: unknown } | null)?.updated_at
-  return typeof updatedAt === 'string' ? updatedAt : null
+  if (!data) return null
+  const row = data as { revision?: unknown; updated_at?: unknown }
+  if (
+    !Number.isSafeInteger(row.revision) ||
+    (row.revision as number) < 0 ||
+    typeof row.updated_at !== 'string'
+  ) {
+    throw new DataValidationError('Сервер вернул некорректную версию синхронизации')
+  }
+  return { revision: row.revision as number, updatedAt: row.updated_at }
 }
 
-async function ensureServerStateInitialized(userId: string) {
+async function fetchServerPersistedStable(
+  userId: string,
+): Promise<{ state: Persisted; meta: SyncMeta }> {
+  for (let attempt = 0; attempt < CONSISTENT_READ_ATTEMPTS; attempt += 1) {
+    const before = await fetchSyncMeta(userId)
+    if (!before) throw new SyncConflictError('Состояние сервера ещё не инициализировано')
+    const [habitRows, markRows] = await Promise.all([
+      fetchAllLiveHabits(userId),
+      fetchAllActiveMarks(userId),
+    ])
+    const after = await fetchSyncMeta(userId)
+    if (after && before.revision === after.revision) {
+      const habits = habitRows.map(habitFromRow)
+      const liveIds = new Set(habits.map((habit) => habit.id))
+      const validMarks = markRows.filter((mark) => liveIds.has(mark.habit_id))
+      return {
+        state: { habits, completions: completionsFromMarks(validMarks) },
+        meta: after,
+      }
+    }
+  }
+  throw new SyncConflictError(
+    'Серверное состояние постоянно меняется; чтение будет повторено позже',
+  )
+}
+
+type RpcResultRow = {
+  applied?: unknown
+  server_revision?: unknown
+  server_updated_at?: unknown
+}
+
+async function applyServerEvent(
+  userId: string,
+  pending: PendingOutgoing,
+): Promise<PushBatchResult> {
+  if (!supabase) return { applied: false, revision: 0, version: '' }
+  let event: PendingOutgoing
+  try {
+    event = parsePendingOutgoing(pending)
+  } catch (error) {
+    if (error instanceof DataValidationError) {
+      throw new PermanentSyncError(error.message, error)
+    }
+    throw error
+  }
+  if (event.expected_revision === undefined) throw new SyncNeedsRebaseError()
+
+  const { data, error } = await supabase.rpc('apply_habit_sync_event', {
+    p_user_id: userId,
+    p_client_event_id: event.client_event_id,
+    p_kind: event.kind,
+    p_payload: event.payload,
+    p_expected_revision: event.expected_revision,
+  })
+  if (error) {
+    const code = (error as { code?: string }).code
+    if (code === '40001') throw new SyncConflictError()
+    if (code === '22023' || code === '22007' || code === '22008') {
+      throw new PermanentSyncError(error.message, error)
+    }
+    throw error
+  }
+  const raw = Array.isArray(data) ? data[0] : data
+  const row = (raw ?? {}) as RpcResultRow
+  if (
+    typeof row.applied !== 'boolean' ||
+    !Number.isSafeInteger(row.server_revision) ||
+    (row.server_revision as number) < 0 ||
+    typeof row.server_updated_at !== 'string'
+  ) {
+    throw new DataValidationError('RPC вернул некорректную версию синхронизации')
+  }
+  return {
+    applied: row.applied,
+    revision: row.server_revision as number,
+    version: row.server_updated_at,
+  }
+}
+
+async function ensureServerStateInitialized(userId: string): Promise<void> {
   if (!supabase) return
-  const { data, error } = await supabase
-    .from('calendar_sync_meta')
-    .select('user_id')
-    .eq('user_id', userId)
-    .maybeSingle()
-  if (error) throw error
-  if (data) return
+  const meta = await fetchSyncMeta(userId)
+  if (meta) return
 
   const fromEvents = await loadPersistedFromEventLog(userId)
   const fromLegacyTables = fromEvents ?? (await legacyPullPersisted(userId))
   const initialState = fromLegacyTables ?? buildSeed(new Date())
-  await replaceServerState(userId, initialState)
-  await touchServerSyncMeta(userId)
+  try {
+    await applyServerEvent(userId, {
+      client_event_id: 'sync-v3-initial-state',
+      kind: 'state_snapshot',
+      payload: initialState,
+      expected_revision: 0,
+    })
+  } catch (error) {
+    if (!isSyncConflictError(error)) throw error
+  }
 }
 
-async function applyServerOperation(userId: string, item: PendingOutgoing) {
-  switch (item.kind) {
-    case 'state_snapshot':
-      await replaceServerState(userId, item.payload as Persisted)
-      await touchServerSyncMeta(userId)
-      return
-    case 'habit_upsert':
-      await upsertServerHabit(userId, item.payload as Habit)
-      await touchServerSyncMeta(userId)
-      return
-    case 'habit_delete': {
-      const { id } = item.payload as { id?: string }
-      if (id) {
-        await softDeleteServerHabit(userId, id)
-        await touchServerSyncMeta(userId)
-      }
-      return
-    }
-    case 'mark_set': {
-      const { habitId, dayKey, marked } = item.payload as {
-        habitId?: string
-        dayKey?: string
-        marked?: boolean
-      }
-      if (habitId && dayKey) {
-        await upsertServerMark(userId, habitId, dayKey, marked === true)
-        await touchServerSyncMeta(userId)
-      }
-      return
-    }
-    default:
-      return
-  }
+export async function fetchServerSyncVersion(userId: string): Promise<string | null> {
+  const meta = await fetchSyncMeta(userId)
+  return meta?.updatedAt ?? null
 }
 
 export async function pushEventBatch(
   userId: string,
   batch: PendingOutgoing[],
-): Promise<void> {
-  if (!supabase || batch.length === 0) return
+): Promise<PushBatchResult | null> {
+  if (!supabase || batch.length === 0) return null
   await ensureServerStateInitialized(userId)
+  let result: PushBatchResult | null = null
   for (const item of batch) {
-    await applyServerOperation(userId, item)
+    result = await applyServerEvent(userId, item)
   }
+  return result
 }
 
 export async function loadPersistedFromEvents(
   userId: string,
-): Promise<{ state: Persisted; lastSeq: number; version: string | null }> {
+): Promise<{
+  state: Persisted
+  lastSeq: number
+  version: string | null
+  revision: number
+}> {
   if (!supabase) {
-    return { state: buildSeed(new Date()), lastSeq: 0, version: null }
+    return {
+      state: buildSeed(new Date()),
+      lastSeq: 0,
+      version: null,
+      revision: 0,
+    }
   }
   await ensureServerStateInitialized(userId)
-  const [state, version] = await Promise.all([
-    fetchServerPersisted(userId),
-    fetchServerSyncVersion(userId),
-  ])
-  return { state, lastSeq: 0, version }
+  const { state, meta } = await fetchServerPersistedStable(userId)
+  return {
+    state,
+    lastSeq: 0,
+    version: meta.updatedAt,
+    revision: meta.revision,
+  }
 }
 
 export function subscribeToSyncEvents(
@@ -413,7 +414,7 @@ export function subscribeToSyncEvents(
 ): () => void {
   const client = supabase
   if (!client) return () => {}
-  const ch = client
+  const channel = client
     .channel(`calendar_state:${userId}`)
     .on(
       'postgres_changes',
@@ -423,9 +424,7 @@ export function subscribeToSyncEvents(
         table: 'habits',
         filter: `user_id=eq.${userId}`,
       },
-      () => {
-        onNewData()
-      },
+      onNewData,
     )
     .on(
       'postgres_changes',
@@ -435,13 +434,11 @@ export function subscribeToSyncEvents(
         table: 'habit_marks',
         filter: `user_id=eq.${userId}`,
       },
-      () => {
-        onNewData()
-      },
+      onNewData,
     )
     .subscribe()
   return () => {
-    void client.removeChannel(ch)
+    void client.removeChannel(channel)
   }
 }
 

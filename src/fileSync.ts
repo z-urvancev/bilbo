@@ -1,4 +1,5 @@
 import type { Completions, Habit, Persisted } from './types'
+import { parseHabits, parsePersisted } from './validation'
 
 export const DATA_FILE = 'habit-calendar-data.json'
 
@@ -158,21 +159,27 @@ export type ParsedBundle =
 export function parseBundleJson(text: string): ParsedBundle | null {
   try {
     const j = JSON.parse(text) as Record<string, unknown>
-    if (j.format !== 'habit-calendar-export' || !Array.isArray(j.habits))
+    if (
+      j.format !== 'habit-calendar-export' ||
+      j.version !== 1 ||
+      typeof j.savedAt !== 'string' ||
+      !Number.isFinite(Date.parse(j.savedAt))
+    ) {
       return null
-    if (j.habitsOnly === true) {
-      return { kind: 'habits', habits: j.habits as Habit[] }
     }
-    if (j.completions && typeof j.completions === 'object') {
+    if (j.habitsOnly === true) {
+      return { kind: 'habits', habits: parseHabits(j.habits) }
+    }
+    if (j.completions !== undefined) {
       return {
         kind: 'full',
-        data: {
-          habits: j.habits as Habit[],
-          completions: j.completions as Completions,
-        },
+        data: parsePersisted({
+          habits: j.habits,
+          completions: j.completions,
+        }),
       }
     }
-    return { kind: 'habits', habits: j.habits as Habit[] }
+    return { kind: 'habits', habits: parseHabits(j.habits) }
   } catch {
     return null
   }
