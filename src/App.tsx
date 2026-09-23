@@ -1552,16 +1552,16 @@ export default function App() {
 
   return (
     <div
-      className={`min-h-svh pb-[env(safe-area-inset-bottom,0px)] pt-[env(safe-area-inset-top,0px)] ${
+      className={
         isMobile
-          ? 'bg-[#f9f9f9]'
-          : 'bg-gradient-to-b from-teal-50 to-white'
-      }`}
+          ? 'fixed inset-x-0 top-0 flex h-dvh min-h-0 flex-col overflow-hidden bg-[#f9f9f9] pt-[env(safe-area-inset-top,0px)]'
+          : 'min-h-svh bg-gradient-to-b from-teal-50 to-white pb-[env(safe-area-inset-bottom,0px)] pt-[env(safe-area-inset-top,0px)]'
+      }
     >
       <header
         className={
           isMobile
-            ? 'border-b border-black/[0.06] bg-[#f7f7f7] px-3 pb-3 pt-3 text-neutral-900'
+            ? 'shrink-0 border-b border-black/[0.06] bg-[#f7f7f7] px-3 pb-3 pt-3 text-neutral-900'
             : 'border-b border-teal-200 bg-teal-700 px-3 py-3 text-white shadow-md sm:px-4 sm:py-4'
         }
       >
@@ -1686,7 +1686,11 @@ export default function App() {
 
       {!session?.user ? (
       <main
-        className={`mx-auto max-w-3xl px-3 py-10 ${isMobile ? 'pb-28' : ''}`}
+        className={`mx-auto max-w-3xl px-3 py-10 ${
+          isMobile
+            ? 'min-h-0 w-full flex-1 overflow-y-auto overscroll-y-contain pb-28 [-webkit-overflow-scrolling:touch]'
+            : ''
+        }`}
       >
         <div className="rounded-2xl border border-teal-200 bg-white p-6 text-center shadow-sm">
           <h2 className="text-lg font-semibold text-teal-900">Нужна авторизация</h2>
@@ -1705,7 +1709,9 @@ export default function App() {
       ) : screen === 'habits' ? (
       <main
         className={`mx-auto max-w-3xl px-3 py-6 sm:py-8 ${
-          isMobile ? 'pb-28' : ''
+          isMobile
+            ? 'min-h-0 w-full flex-1 overflow-y-auto overscroll-y-contain pb-28 [-webkit-overflow-scrolling:touch]'
+            : ''
         }`}
       >
         {!isMobile && (
@@ -2152,7 +2158,9 @@ export default function App() {
       ) : (
       <main
         className={`mx-auto max-w-7xl px-2 py-4 sm:px-3 sm:py-6 ${
-          isMobile ? 'pb-28' : ''
+          isMobile
+            ? 'min-h-0 w-full flex-1 overflow-y-auto overscroll-y-contain pb-28 [-webkit-overflow-scrolling:touch]'
+            : ''
         }`}
       >
         {(!isMobile || mobileTrackerTab === 'analytics') && (
@@ -2843,13 +2851,13 @@ export default function App() {
           {authMenuOpen && session?.user && (
             <button
               type="button"
-              className="fixed inset-0 z-[90] bg-black/30"
+              className="absolute inset-0 z-[90] bg-black/30"
               aria-label="Закрыть меню"
               onMouseDown={() => setAuthMenuOpen(false)}
             />
           )}
           {authMenuOpen && session?.user && (
-            <div className="fixed inset-x-3 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-[110] mx-auto max-w-sm rounded-2xl border border-teal-200 bg-white p-4 shadow-2xl">
+            <div className="absolute inset-x-3 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-[110] mx-auto max-w-sm rounded-2xl border border-teal-200 bg-white p-4 shadow-2xl">
               <p className="mb-3 truncate text-sm font-medium text-teal-900">
                 {profileName}
               </p>
@@ -2870,7 +2878,7 @@ export default function App() {
             </div>
           )}
           {screen === 'tracker' && mobileTrackerTab === 'marks' && (
-            <div className="fixed bottom-[calc(5.2rem+env(safe-area-inset-bottom))] left-3 z-[105]">
+            <div className="absolute bottom-[calc(5.2rem+env(safe-area-inset-bottom))] left-3 z-[105]">
               <div className="inline-flex rounded-xl border border-teal-200 bg-white p-0.5 shadow-sm">
                 <button
                   type="button"
@@ -2894,7 +2902,7 @@ export default function App() {
             </div>
           )}
           <nav
-            className="fixed bottom-0 left-0 right-0 z-[100] pointer-events-none"
+            className="pointer-events-none absolute bottom-0 left-0 right-0 z-[100]"
             aria-label="Основная навигация"
           >
             <div className="pointer-events-auto px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1">
