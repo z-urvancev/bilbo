@@ -184,6 +184,41 @@ test('transactional sync migration enforces CAS, idempotency and tombstones', as
       ['deep-work', 'meeting'],
     )
 
+    await db.query(
+      `insert into public.timer_events (
+        user_id, client_event_id, kind, occurred_at
+      ) values ($1::uuid, 'event-1', 'interruption', now())`,
+      [USER_A],
+    )
+    const timerEvents = await db.query(
+      `select client_event_id, kind from public.timer_events
+       where user_id = $1::uuid`,
+      [USER_A],
+    )
+    assert.deepEqual(timerEvents.rows, [
+      { client_event_id: 'event-1', kind: 'interruption' },
+    ])
+    await assert.rejects(
+      () =>
+        db.query(
+          `insert into public.timer_events (
+            user_id, client_event_id, kind, occurred_at
+          ) values ($1::uuid, 'event-2', 'distraction', now())`,
+          [USER_B],
+        ),
+      (error) => error.code === '42501',
+    )
+    await assert.rejects(
+      () =>
+        db.query(
+          `insert into public.timer_events (
+            user_id, client_event_id, kind, occurred_at
+          ) values ($1::uuid, 'event-3', 'other', now())`,
+          [USER_A],
+        ),
+      (error) => error.code === '23514',
+    )
+
     const initialHabit = {
       id: 'habit-1',
       name: 'Читать',

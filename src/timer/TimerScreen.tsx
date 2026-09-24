@@ -20,11 +20,14 @@ import {
   applyTimerCommand,
   fetchTimerSnapshot,
   isTimerConflict,
+  recordTimerEvent,
   timerErrorText,
   timerRangeBounds,
 } from './api'
 import type {
   TimerDefinition,
+  TimerEvent,
+  TimerEventKind,
   TimerInterval,
   TimerPeriod,
   TimerSnapshot,
@@ -40,13 +43,37 @@ type DaySegment = {
   endMinute: number
 }
 
+type DayPointEvent = {
+  event: TimerEvent
+  at: number
+  minute: number
+}
+
 type DayView = {
   day: string
   segments: DaySegment[]
+  events: DayPointEvent[]
   total: number
 }
 
 const MIN_TIMELINE_MINUTES = 5
+const TIMER_EVENT_META: Record<
+  TimerEventKind,
+  { label: string; symbol: string; color: string; softColor: string }
+> = {
+  interruption: {
+    label: 'Interruption',
+    symbol: '!',
+    color: '#f59e0b',
+    softColor: '#fff7df',
+  },
+  distraction: {
+    label: 'Distraction',
+    symbol: '↗',
+    color: '#ec4899',
+    softColor: '#fff0f7',
+  },
+}
 
 function todayKey(): string {
   const now = new Date()
@@ -223,6 +250,35 @@ function IntervalPopover({
   )
 }
 
+function EventPopover({
+  point,
+  day,
+  className = '',
+  style,
+}: {
+  point: DayPointEvent
+  day?: string
+  className?: string
+  style?: CSSProperties
+}) {
+  const meta = TIMER_EVENT_META[point.event.kind]
+  return (
+    <div
+      className={`pointer-events-none absolute z-30 max-w-[11rem] rounded-xl bg-[#17231f]/95 px-2.5 py-2 text-white shadow-xl ${className}`}
+      style={{ borderTop: `3px solid ${meta.color}`, ...style }}
+      role="status"
+    >
+      <strong className="block truncate text-[0.68rem]">
+        {meta.symbol} {meta.label}
+      </strong>
+      <span className="mt-0.5 block whitespace-nowrap text-[0.58rem] font-semibold text-white/70">
+        {day ? `${shortWeekday(day)}, ${parseKey(day).d} · ` : ''}
+        {formatClock(point.at)}
+      </span>
+    </div>
+  )
+}
+
 function isNetworkish(error: unknown): boolean {
   const text = timerErrorText(error).toLowerCase()
   return (
@@ -235,9 +291,11 @@ function isNetworkish(error: unknown): boolean {
 
 function DurationTimelineChart({
   segments,
+  events,
   timers,
 }: {
   segments: DaySegment[]
+  events: DayPointEvent[]
   timers: TimerDefinition[]
 }) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
@@ -246,13 +304,21 @@ function DurationTimelineChart({
     Math.max(60_000, ...segments.map((segment) => segment.end - segment.start)),
   )
   const selectedSegment =
-    segments.find((segment) => segmentKey(segment) === selectedKey) ?? null
+    segments.find(
+      (segment) => `interval:${segmentKey(segment)}` === selectedKey,
+    ) ?? null
+  const selectedPoint =
+    events.find(
+      (point) => `event:${point.event.clientEventId}` === selectedKey,
+    ) ?? null
   const selectedTimer = selectedSegment
     ? timerFor(timers, selectedSegment.interval.timerId)
     : undefined
   const selectedLeft = selectedSegment
     ? Math.min(92, Math.max(8, (selectedSegment.startMinute / 1440) * 100))
-    : 50
+    : selectedPoint
+      ? Math.min(92, Math.max(8, (selectedPoint.minute / 1440) * 100))
+      : 50
   const selectedPopoverStyle: CSSProperties =
     selectedLeft < 30
       ? { left: '0.5rem' }
@@ -268,7 +334,7 @@ function DurationTimelineChart({
 
   useEffect(() => clearHoldTimer, [clearHoldTimer])
 
-  if (segments.length === 0) {
+  if (segments.length === 0 && events.length === 0) {
     return (
       <div className="grid min-h-52 place-items-center rounded-2xl bg-[#f5f7f4] px-5 text-center">
         <div>
@@ -308,6 +374,13 @@ function DurationTimelineChart({
                 style={selectedPopoverStyle}
               />
             )}
+            {selectedPoint && (
+              <EventPopover
+                point={selectedPoint}
+                className="top-2"
+                style={selectedPopoverStyle}
+              />
+            )}
             {[0, 50, 100].map((top) => (
               <span
                 key={top}
@@ -325,7 +398,7 @@ function DurationTimelineChart({
             {segments.map((segment) => {
               const timer = timerFor(timers, segment.interval.timerId)
               if (!timer) return null
-              const key = segmentKey(segment)
+              const key = `interval:${segmentKey(segment)}`
               const duration = segment.end - segment.start
               const left = (segment.startMinute / 1440) * 100
               const width = (visualSegmentMinutes(segment) / 1440) * 100
@@ -372,6 +445,43 @@ function DurationTimelineChart({
                 </div>
               )
             })}
+            {events.map((point) => {
+              const meta = TIMER_EVENT_META[point.event.kind]
+              const key = `event:${point.event.clientEventId}`
+              const left = (point.minute / 1440) * 100
+              const selected = selectedKey === key
+              return (
+                <div key={key}>
+                  <span
+                    className={`pointer-events-none absolute bottom-1 h-2.5 w-2.5 -translate-x-1/2 rotate-45 rounded-[0.18rem] border-2 border-white shadow-sm ${
+                      selected ? 'z-20 ring-2 ring-[#17231f]/20' : 'z-10'
+                    }`}
+                    style={{ left: `${left}%`, backgroundColor: meta.color }}
+                  />
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      setSelectedKey(key)
+                    }}
+                    onPointerDown={() => {
+                      clearHoldTimer()
+                      holdTimerRef.current = window.setTimeout(
+                        () => setSelectedKey(key),
+                        420,
+                      )
+                    }}
+                    onPointerUp={clearHoldTimer}
+                    onPointerCancel={clearHoldTimer}
+                    onPointerLeave={clearHoldTimer}
+                    onFocus={() => setSelectedKey(key)}
+                    className="absolute bottom-0 z-20 h-7 w-7 -translate-x-1/2 rounded focus:outline-none focus:ring-2 focus:ring-[#17231f]/20"
+                    style={{ left: `${Math.min(99, Math.max(1, left))}%` }}
+                    aria-label={`${meta.label}: ${formatClock(point.at)}`}
+                  />
+                </div>
+              )
+            })}
           </div>
           <div className="mt-2 grid grid-cols-5 text-[0.58rem] font-semibold text-[#929d97]">
             {['00:00', '06:00', '12:00', '18:00', '24:00'].map(
@@ -409,12 +519,15 @@ function IntervalList({
   const entries = days.flatMap((dayView) =>
     dayView.segments.map((segment) => ({ day: dayView.day, segment })),
   )
-  if (entries.length === 0) return null
+  const pointEntries = days.flatMap((dayView) =>
+    dayView.events.map((point) => ({ day: dayView.day, point })),
+  )
+  if (entries.length === 0 && pointEntries.length === 0) return null
 
   return (
     <div className="mt-5 border-t border-[#e7ece8] pt-4">
       <h4 className="mb-2 text-[0.62rem] font-extrabold uppercase tracking-[0.12em] text-[#819089]">
-        Список интервалов
+        Интервалы и метки
       </h4>
       <div className="grid gap-1.5 xl:grid-cols-2">
         {entries.map(({ day, segment }) => {
@@ -454,6 +567,39 @@ function IntervalList({
             </div>
           )
         })}
+        {pointEntries.map(({ day, point }) => {
+          const meta = TIMER_EVENT_META[point.event.kind]
+          const { d } = parseKey(day)
+          return (
+            <div
+              key={`${day}-${point.event.clientEventId}`}
+              className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-[#e8edea] px-3 py-2"
+              style={{ backgroundColor: meta.softColor }}
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <span
+                  className="grid h-5 w-5 shrink-0 place-items-center rounded-md text-[0.62rem] font-black text-white"
+                  style={{ backgroundColor: meta.color }}
+                >
+                  {meta.symbol}
+                </span>
+                <div className="min-w-0">
+                  <strong className="block truncate text-[0.68rem] text-[#435049]">
+                    {meta.label}
+                  </strong>
+                  {period === 'week' && (
+                    <span className="block text-[0.56rem] font-semibold text-[#8b9690]">
+                      {shortWeekday(day)}, {d}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <span className="whitespace-nowrap text-[0.64rem] font-bold tabular-nums text-[#4e5b55]">
+                {formatClock(point.at)}
+              </span>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -468,9 +614,11 @@ function DesktopHorizontalTimelines({
   timers: TimerDefinition[]
   period: TimerPeriod
 }) {
-  const hasSegments = days.some((day) => day.segments.length > 0)
+  const hasTimelineItems = days.some(
+    (day) => day.segments.length > 0 || day.events.length > 0,
+  )
 
-  if (!hasSegments && period === 'day') {
+  if (!hasTimelineItems && period === 'day') {
     return (
       <div className="grid min-h-56 place-items-center px-5 text-center">
         <div>
@@ -522,8 +670,10 @@ function DesktopHorizontalTimelines({
                   : formatDay(dayView.day)}
               </strong>
               <span className="text-[0.6rem] font-semibold text-[#8b9690]">
-                {dayView.segments.length}{' '}
-                {dayView.segments.length === 1 ? 'интервал' : 'интервалов'}
+                {dayView.segments.length} инт.
+                {dayView.events.length > 0
+                  ? ` · ${dayView.events.length} мет.`
+                  : ''}
               </span>
             </div>
             <div className="relative h-9 overflow-hidden rounded-xl border border-[#e1e7e3] bg-[#f5f7f4]">
@@ -553,6 +703,18 @@ function DesktopHorizontalTimelines({
                   >
                     {width > 8 ? timer.name : ''}
                   </span>
+                )
+              })}
+              {dayView.events.map((point) => {
+                const meta = TIMER_EVENT_META[point.event.kind]
+                const left = (point.minute / 1440) * 100
+                return (
+                  <span
+                    key={point.event.clientEventId}
+                    className="absolute top-1/2 z-20 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-[0.2rem] border-2 border-white shadow-sm"
+                    style={{ left: `${left}%`, backgroundColor: meta.color }}
+                    title={`${meta.label}: ${formatClock(point.at)}`}
+                  />
                 )
               })}
             </div>
@@ -585,10 +747,21 @@ function MobileWeekTimeline({
       day: dayView.day,
       dayIndex,
       segment,
-      key: `${dayView.day}-${segmentKey(segment)}`,
+      key: `interval:${dayView.day}-${segmentKey(segment)}`,
+    })),
+  )
+  const pointEntries = days.flatMap((dayView, dayIndex) =>
+    dayView.events.map((point) => ({
+      day: dayView.day,
+      dayIndex,
+      point,
+      key: `event:${point.event.clientEventId}`,
     })),
   )
   const selectedEntry = entries.find((entry) => entry.key === selectedKey)
+  const selectedPoint = pointEntries.find(
+    (entry) => entry.key === selectedKey,
+  )
   const selectedTimer = selectedEntry
     ? timerFor(timers, selectedEntry.segment.interval.timerId)
     : undefined
@@ -637,6 +810,13 @@ function MobileWeekTimeline({
             segment={selectedEntry.segment}
             timer={selectedTimer}
             day={selectedEntry.day}
+            className="left-2 top-2"
+          />
+        )}
+        {selectedPoint && (
+          <EventPopover
+            point={selectedPoint.point}
+            day={selectedPoint.day}
             className="left-2 top-2"
           />
         )}
@@ -719,7 +899,105 @@ function MobileWeekTimeline({
             </div>
           )
         })}
+        {pointEntries.map(({ dayIndex, point, key }) => {
+          const meta = TIMER_EVENT_META[point.event.kind]
+          const top = Math.max(
+            0,
+            ((point.minute - startHour * 60) / scaleMinutes) * 100,
+          )
+          const selected = selectedKey === key
+          return (
+            <div key={key}>
+              <span
+                className={`pointer-events-none absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-[0.18rem] border-2 border-white shadow-sm ${
+                  selected ? 'z-20 ring-2 ring-[#17231f]/20' : 'z-10'
+                }`}
+                style={{
+                  left: `${((dayIndex + 0.5) / 7) * 100}%`,
+                  top: `${Math.min(100, top)}%`,
+                  backgroundColor: meta.color,
+                }}
+              />
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setSelectedKey(key)
+                }}
+                onPointerDown={() => {
+                  clearHoldTimer()
+                  holdTimerRef.current = window.setTimeout(
+                    () => setSelectedKey(key),
+                    420,
+                  )
+                }}
+                onPointerUp={clearHoldTimer}
+                onPointerCancel={clearHoldTimer}
+                onPointerLeave={clearHoldTimer}
+                onFocus={() => setSelectedKey(key)}
+                className="absolute z-20 h-7 -translate-y-1/2 rounded focus:outline-none focus:ring-2 focus:ring-[#17231f]/20"
+                style={{
+                  left: `calc(${(dayIndex / 7) * 100}% + 1px)`,
+                  width: `calc(${100 / 7}% - 2px)`,
+                  top: `${Math.min(99, Math.max(1, top))}%`,
+                }}
+                aria-label={`${meta.label}: ${formatClock(point.at)}`}
+              />
+            </div>
+          )
+        })}
       </div>
+    </div>
+  )
+}
+
+function TimerEventButtons({
+  compact,
+  busy,
+  lastRecorded,
+  onRecord,
+}: {
+  compact: boolean
+  busy: TimerEventKind | null
+  lastRecorded: TimerEventKind | null
+  onRecord: (kind: TimerEventKind) => void
+}) {
+  return (
+    <div
+      className={
+        compact ? 'flex min-w-0 flex-1 gap-1' : 'grid grid-cols-2 gap-2'
+      }
+    >
+      {(['interruption', 'distraction'] as const).map((kind) => {
+        const meta = TIMER_EVENT_META[kind]
+        const recorded = lastRecorded === kind
+        return (
+          <button
+            key={kind}
+            type="button"
+            disabled={busy !== null}
+            onClick={() => onRecord(kind)}
+            className={`inline-flex min-w-0 items-center justify-center gap-1.5 rounded-xl border font-bold transition active:scale-[0.98] disabled:opacity-50 ${
+              compact
+                ? 'h-9 flex-1 px-1.5 text-[0.5rem]'
+                : 'h-9 px-2.5 text-[0.62rem]'
+            }`}
+            style={{
+              borderColor: `${meta.color}55`,
+              backgroundColor: meta.softColor,
+              color: meta.color,
+            }}
+            aria-label={`Отметить ${meta.label}`}
+          >
+            <span className="grid h-4 w-4 shrink-0 place-items-center rounded text-[0.55rem] text-white" style={{ backgroundColor: meta.color }}>
+              {recorded ? '✓' : meta.symbol}
+            </span>
+            <span className="truncate">
+              {busy === kind ? 'Сохраняю…' : meta.label}
+            </span>
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -737,8 +1015,12 @@ export function TimerScreen({
   const [now, setNow] = useState(() => Date.now())
   const [loading, setLoading] = useState(true)
   const [commandBusy, setCommandBusy] = useState(false)
+  const [eventBusy, setEventBusy] = useState<TimerEventKind | null>(null)
+  const [lastRecordedEvent, setLastRecordedEvent] =
+    useState<TimerEventKind | null>(null)
   const [error, setError] = useState<string | null>(null)
   const loadGenerationRef = useRef(0)
+  const eventFeedbackTimerRef = useRef<number | undefined>(undefined)
 
   const reload = useCallback(
     async (quiet = false) => {
@@ -769,6 +1051,15 @@ export function TimerScreen({
     const intervalId = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(intervalId)
   }, [snapshot?.state.activeTimerId])
+
+  useEffect(
+    () => () => {
+      if (eventFeedbackTimerRef.current !== undefined) {
+        window.clearTimeout(eventFeedbackTimerRef.current)
+      }
+    },
+    [],
+  )
 
   useEffect(() => {
     if (!supabase) return
@@ -805,6 +1096,16 @@ export function TimerScreen({
           event: '*',
           schema: 'public',
           table: 'timer_definitions',
+          filter: `user_id=eq.${userId}`,
+        },
+        scheduleReload,
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'timer_events',
           filter: `user_id=eq.${userId}`,
         },
         scheduleReload,
@@ -920,6 +1221,18 @@ export function TimerScreen({
           })
           .filter((segment): segment is DaySegment => segment !== null)
           .sort((left, right) => left.start - right.start)
+        const events = (snapshot?.events ?? [])
+          .map((event): DayPointEvent | null => {
+            const at = new Date(event.occurredAt).getTime()
+            if (at < start.getTime() || at >= end.getTime()) return null
+            return {
+              event,
+              at,
+              minute: (at - start.getTime()) / 60000,
+            }
+          })
+          .filter((event): event is DayPointEvent => event !== null)
+          .sort((left, right) => left.at - right.at)
         const imported = (snapshot?.importedTotals ?? [])
           .filter((total) => total.day === day)
           .reduce((sum, total) => sum + total.durationMs, 0)
@@ -927,16 +1240,25 @@ export function TimerScreen({
           (sum, segment) => sum + segment.end - segment.start,
           0,
         )
-        return { day, segments, total: imported + exact }
+        return { day, segments, events, total: imported + exact }
       }),
-    [periodDays, snapshot?.importedTotals, timeline],
+    [periodDays, snapshot?.events, snapshot?.importedTotals, timeline],
   )
 
   const weekScale = useMemo(() => {
     const segments = dayViews.flatMap((day) => day.segments)
-    if (segments.length === 0) return { startHour: 8, endHour: 20 }
-    const earliest = Math.min(...segments.map((segment) => segment.startMinute))
-    const latest = Math.max(...segments.map((segment) => segment.endMinute))
+    const events = dayViews.flatMap((day) => day.events)
+    if (segments.length === 0 && events.length === 0) {
+      return { startHour: 8, endHour: 20 }
+    }
+    const earliest = Math.min(
+      ...segments.map((segment) => segment.startMinute),
+      ...events.map((event) => event.minute),
+    )
+    const latest = Math.max(
+      ...segments.map((segment) => segment.endMinute),
+      ...events.map((event) => event.minute),
+    )
     let startHour = Math.max(0, Math.floor(earliest / 60))
     let endHour = Math.min(24, Math.ceil(latest / 60))
     if (endHour - startHour < 6) {
@@ -993,6 +1315,61 @@ export function TimerScreen({
       setError(timerErrorText(commandError))
     } finally {
       setCommandBusy(false)
+    }
+  }
+
+  async function markTimerEvent(kind: TimerEventKind) {
+    if (eventBusy) return
+    const event: TimerEvent = {
+      clientEventId: crypto.randomUUID(),
+      kind,
+      occurredAt: new Date().toISOString(),
+    }
+    setEventBusy(kind)
+    setError(null)
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          await recordTimerEvent({ userId, ...event })
+          break
+        } catch (eventError) {
+          if (attempt === 0 && isNetworkish(eventError)) continue
+          throw eventError
+        }
+      }
+
+      const { start, end } = timerRangeBounds(selectedDate, period)
+      const occurredAt = new Date(event.occurredAt).getTime()
+      if (occurredAt < start.getTime() || occurredAt >= end.getTime()) {
+        setSelectedDate(todayKey())
+      } else {
+        setSnapshot((current) =>
+          current
+            ? {
+                ...current,
+                events: [
+                  event,
+                  ...current.events.filter(
+                    (item) => item.clientEventId !== event.clientEventId,
+                  ),
+                ],
+              }
+            : current,
+        )
+      }
+
+      setLastRecordedEvent(kind)
+      if (eventFeedbackTimerRef.current !== undefined) {
+        window.clearTimeout(eventFeedbackTimerRef.current)
+      }
+      eventFeedbackTimerRef.current = window.setTimeout(
+        () => setLastRecordedEvent(null),
+        1400,
+      )
+    } catch (eventError) {
+      setError(timerErrorText(eventError))
+    } finally {
+      setEventBusy(null)
     }
   }
 
@@ -1219,6 +1596,17 @@ export function TimerScreen({
                 })}
               </div>
             )}
+            <div className="mt-2 border-t border-[#e7ece8] pt-3">
+              <p className="mb-2 px-1 text-[0.58rem] font-extrabold uppercase tracking-[0.12em] text-[#819089]">
+                Разовые метки
+              </p>
+              <TimerEventButtons
+                compact={false}
+                busy={eventBusy}
+                lastRecorded={lastRecordedEvent}
+                onRecord={(kind) => void markTimerEvent(kind)}
+              />
+            </div>
           </section>
         )}
 
@@ -1239,7 +1627,8 @@ export function TimerScreen({
                   : 'bg-blue-50 text-blue-700'
               }`}
             >
-              {timeline.length}
+              {timeline.length +
+                dayViews.reduce((sum, day) => sum + day.events.length, 0)}
             </span>
           </div>
 
@@ -1253,6 +1642,7 @@ export function TimerScreen({
             <div className="pt-4">
               <DurationTimelineChart
                 segments={dayViews[0]?.segments ?? []}
+                events={dayViews[0]?.events ?? []}
                 timers={timers}
               />
             </div>
@@ -1272,22 +1662,30 @@ export function TimerScreen({
       {isMobile && (
         <div className="fixed inset-x-0 bottom-0 z-[100] px-3 pb-[max(0.55rem,env(safe-area-inset-bottom))]">
           <div className="mx-auto max-w-md">
-            <div className="mb-2 inline-flex h-11 items-center rounded-2xl border border-[#d8e0db] bg-white p-1 shadow-[0_6px_24px_rgba(23,35,31,0.14)]">
-              {(['day', 'week'] as const).map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => setPeriod(value)}
-                  className={`h-9 min-w-[5.25rem] rounded-xl px-4 text-xs font-bold transition ${
-                    period === value
-                      ? 'bg-[#6d5dfc] text-white shadow-sm'
-                      : 'text-[#4c5a54] active:bg-[#f1f4f2]'
-                  }`}
-                  aria-pressed={period === value}
-                >
-                  {value === 'day' ? 'День' : 'Неделя'}
-                </button>
-              ))}
+            <div className="mb-2 flex items-center gap-2">
+              <div className="inline-flex h-11 shrink-0 items-center rounded-2xl border border-[#d8e0db] bg-white p-1 shadow-[0_6px_24px_rgba(23,35,31,0.14)]">
+                {(['day', 'week'] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setPeriod(value)}
+                    className={`h-9 min-w-[4.75rem] rounded-xl px-3 text-xs font-bold transition ${
+                      period === value
+                        ? 'bg-[#6d5dfc] text-white shadow-sm'
+                        : 'text-[#4c5a54] active:bg-[#f1f4f2]'
+                    }`}
+                    aria-pressed={period === value}
+                  >
+                    {value === 'day' ? 'День' : 'Неделя'}
+                  </button>
+                ))}
+              </div>
+              <TimerEventButtons
+                compact
+                busy={eventBusy}
+                lastRecorded={lastRecordedEvent}
+                onRecord={(kind) => void markTimerEvent(kind)}
+              />
             </div>
             <div className="rounded-[1.7rem] bg-[#17231f] px-2 py-2.5 shadow-[0_-8px_32px_rgba(23,35,31,0.22)]">
               <div className="flex gap-1 overflow-x-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">

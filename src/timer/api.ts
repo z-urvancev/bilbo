@@ -4,6 +4,8 @@ import type {
   TimerCommandResult,
   TimerDailyTotal,
   TimerDefinition,
+  TimerEvent,
+  TimerEventKind,
   TimerInterval,
   TimerPeriod,
   TimerSnapshot,
@@ -32,6 +34,12 @@ type DbTimerInterval = {
   timer_id: string
   started_at: string
   ended_at: string
+}
+
+type DbTimerEvent = {
+  client_event_id: string
+  kind: TimerEventKind
+  occurred_at: string
 }
 
 type DbDailyTotal = {
@@ -113,6 +121,14 @@ function intervalFromRow(row: DbTimerInterval): TimerInterval {
   }
 }
 
+function eventFromRow(row: DbTimerEvent): TimerEvent {
+  return {
+    clientEventId: row.client_event_id,
+    kind: row.kind,
+    occurredAt: row.occurred_at,
+  }
+}
+
 function stateFromRow(row: DbTimerState | null): TimerState {
   return row
     ? {
@@ -164,6 +180,19 @@ export async function fetchTimerSnapshot(
     return (data ?? []) as DbTimerInterval[]
   })
 
+  const eventsPromise = collectAllPages(async (from, to) => {
+    const { data, error } = await client
+      .from('timer_events')
+      .select('client_event_id,kind,occurred_at')
+      .eq('user_id', userId)
+      .gte('occurred_at', start.toISOString())
+      .lt('occurred_at', end.toISOString())
+      .order('occurred_at', { ascending: false })
+      .range(from, to)
+    throwApiError(error)
+    return (data ?? []) as DbTimerEvent[]
+  })
+
   const totalsPromise = client
     .from('timer_daily_totals')
     .select('timer_id,day,duration_ms,source')
@@ -173,11 +202,12 @@ export async function fetchTimerSnapshot(
     .order('day', { ascending: false })
     .order('timer_id', { ascending: true })
 
-  const [definitionsResult, stateResult, intervalRows, totalsResult] =
+  const [definitionsResult, stateResult, intervalRows, eventRows, totalsResult] =
     await Promise.all([
       definitionsPromise,
       statePromise,
       intervalsPromise,
+      eventsPromise,
       totalsPromise,
     ])
 
@@ -191,6 +221,7 @@ export async function fetchTimerSnapshot(
     ),
     state: stateFromRow((stateResult.data ?? null) as DbTimerState | null),
     intervals: intervalRows.map(intervalFromRow),
+    events: eventRows.map(eventFromRow),
     importedTotals: ((totalsResult.data ?? []) as DbDailyTotal[]).map(
       (row): TimerDailyTotal => ({
         timerId: row.timer_id,
@@ -199,6 +230,27 @@ export async function fetchTimerSnapshot(
         source: row.source,
       }),
     ),
+  }
+}
+
+export async function recordTimerEvent(input: {
+  userId: string
+  clientEventId: string
+  kind: TimerEventKind
+  occurredAt: string
+}): Promise<TimerEvent> {
+  const client = ensureClient()
+  const { error } = await client.from('timer_events').insert({
+    user_id: input.userId,
+    client_event_id: input.clientEventId,
+    kind: input.kind,
+    occurred_at: input.occurredAt,
+  })
+  if (error?.code !== '23505') throwApiError(error)
+  return {
+    clientEventId: input.clientEventId,
+    kind: input.kind,
+    occurredAt: input.occurredAt,
   }
 }
 

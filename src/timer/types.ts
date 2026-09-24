@@ -24,6 +24,14 @@ export type TimerInterval = {
   endedAt: string
 }
 
+export type TimerEventKind = 'interruption' | 'distraction'
+
+export type TimerEvent = {
+  clientEventId: string
+  kind: TimerEventKind
+  occurredAt: string
+}
+
 export type TimerDailyTotal = {
   timerId: string
   day: string
@@ -35,6 +43,7 @@ export type TimerSnapshot = {
   timers: TimerDefinition[]
   state: TimerState
   intervals: TimerInterval[]
+  events: TimerEvent[]
   importedTotals: TimerDailyTotal[]
 }
 
