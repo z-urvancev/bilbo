@@ -228,26 +228,6 @@ export async function applyTimerCommand(input: {
   }
 }
 
-export async function createTimerDefinition(input: {
-  userId: string
-  id: string
-  name: string
-  color: string
-  icon: string
-  sortOrder: number
-}): Promise<void> {
-  const client = ensureClient()
-  const { error } = await client.from('timer_definitions').insert({
-    user_id: input.userId,
-    id: input.id,
-    name: input.name,
-    color: input.color,
-    icon: input.icon,
-    sort_order: input.sortOrder,
-  })
-  throwApiError(error)
-}
-
 export function isTimerConflict(error: unknown): boolean {
   return error instanceof TimerApiError && error.code === '40001'
 }

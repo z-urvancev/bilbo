@@ -83,6 +83,16 @@ test('transactional sync migration enforces CAS, idempotency and tombstones', as
       seededTimers.rows.map((row) => row.id),
       ['deep-work', 'meeting', 'ad-hoc', 'break', 'chill-work'],
     )
+    assert.deepEqual(
+      Object.fromEntries(seededTimers.rows.map((row) => [row.id, row.name])),
+      {
+        'deep-work': 'Deep work',
+        meeting: 'Meet',
+        'ad-hoc': 'Ad-hoc',
+        break: 'Break',
+        'chill-work': 'Chill work',
+      },
+    )
     const seededTotals = await db.query(
       `select count(*)::int as rows, sum(duration_ms)::bigint as duration_ms
        from public.timer_daily_totals where user_id = $1::uuid`,
