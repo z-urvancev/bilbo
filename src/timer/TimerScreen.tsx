@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import type { CSSProperties } from 'react'
 import {
   ChevronLeft,
   ChevronRight,
@@ -44,6 +45,8 @@ type DayView = {
   segments: DaySegment[]
   total: number
 }
+
+const MIN_TIMELINE_MINUTES = 5
 
 function todayKey(): string {
   const now = new Date()
@@ -153,7 +156,7 @@ function durationWithinPeriod(
 }
 
 function segmentKey(segment: DaySegment): string {
-  return `${segment.interval.id}-${segment.start}-${segment.end}`
+  return `${segment.interval.id}-${segment.start}`
 }
 
 function niceDurationCeiling(milliseconds: number): number {
@@ -177,6 +180,47 @@ function timerFor(
   timerId: string,
 ): TimerDefinition | undefined {
   return timers.find((timer) => timer.id === timerId)
+}
+
+function visualSegmentMinutes(segment: DaySegment): number {
+  return Math.max(
+    MIN_TIMELINE_MINUTES,
+    segment.endMinute - segment.startMinute,
+  )
+}
+
+function IntervalPopover({
+  segment,
+  timer,
+  day,
+  className = '',
+  style,
+}: {
+  segment: DaySegment
+  timer: TimerDefinition
+  day?: string
+  className?: string
+  style?: CSSProperties
+}) {
+  return (
+    <div
+      className={`pointer-events-none absolute z-30 max-w-[12rem] rounded-xl bg-[#17231f]/95 px-2.5 py-2 text-white shadow-xl ${className}`}
+      style={{ borderTop: `3px solid ${timer.color}`, ...style }}
+      role="status"
+    >
+      <strong className="block truncate text-[0.68rem]">
+        {timer.icon} {timer.name}
+      </strong>
+      <span className="mt-0.5 block whitespace-nowrap text-[0.58rem] font-semibold text-white/70">
+        {day ? `${shortWeekday(day)}, ${parseKey(day).d} · ` : ''}
+        {formatClock(segment.start)}–
+        {segment.interval.active ? 'сейчас' : formatClock(segment.end)}
+      </span>
+      <span className="mt-0.5 block text-[0.6rem] font-bold tabular-nums">
+        {formatDuration(segment.end - segment.start, false)}
+      </span>
+    </div>
+  )
 }
 
 function isNetworkish(error: unknown): boolean {
@@ -206,6 +250,15 @@ function DurationTimelineChart({
   const selectedTimer = selectedSegment
     ? timerFor(timers, selectedSegment.interval.timerId)
     : undefined
+  const selectedLeft = selectedSegment
+    ? Math.min(92, Math.max(8, (selectedSegment.startMinute / 1440) * 100))
+    : 50
+  const selectedPopoverStyle: CSSProperties =
+    selectedLeft < 30
+      ? { left: '0.5rem' }
+      : selectedLeft > 70
+        ? { right: '0.5rem' }
+        : { left: `${selectedLeft}%`, transform: 'translateX(-50%)' }
 
   const clearHoldTimer = useCallback(() => {
     if (holdTimerRef.current === undefined) return
@@ -230,31 +283,6 @@ function DurationTimelineChart({
 
   return (
     <div>
-      {selectedSegment && selectedTimer && (
-        <div
-          className="mb-3 flex items-center justify-between gap-3 rounded-2xl border px-3 py-2.5"
-          style={{
-            borderColor: `color-mix(in srgb, ${selectedTimer.color} 28%, #dfe6e1)`,
-            backgroundColor: `color-mix(in srgb, ${selectedTimer.color} 8%, white)`,
-          }}
-        >
-          <div className="min-w-0">
-            <strong className="block truncate text-xs text-[#35423c]">
-              {selectedTimer.icon} {selectedTimer.name}
-            </strong>
-            <span className="text-[0.64rem] font-semibold text-[#76827c]">
-              {formatClock(selectedSegment.start)} —{' '}
-              {selectedSegment.interval.active
-                ? 'сейчас'
-                : formatClock(selectedSegment.end)}
-            </span>
-          </div>
-          <strong className="shrink-0 text-xs tabular-nums text-[#35423c]">
-            {formatDuration(selectedSegment.end - selectedSegment.start, false)}
-          </strong>
-        </div>
-      )}
-
       <div className="grid grid-cols-[2.5rem_minmax(0,1fr)] gap-2">
         <div className="relative h-52 text-[0.55rem] font-semibold text-[#929d97]">
           {[maxDuration, maxDuration / 2, 0].map((value, index) => (
@@ -272,6 +300,14 @@ function DurationTimelineChart({
             className="relative h-52 overflow-hidden rounded-2xl border border-[#e1e7e3] bg-[#f5f7f4]"
             onClick={() => setSelectedKey(null)}
           >
+            {selectedSegment && selectedTimer && (
+              <IntervalPopover
+                segment={selectedSegment}
+                timer={selectedTimer}
+                className="top-2"
+                style={selectedPopoverStyle}
+              />
+            )}
             {[0, 50, 100].map((top) => (
               <span
                 key={top}
@@ -292,43 +328,48 @@ function DurationTimelineChart({
               const key = segmentKey(segment)
               const duration = segment.end - segment.start
               const left = (segment.startMinute / 1440) * 100
-              const width = Math.max(
-                2,
-                ((segment.endMinute - segment.startMinute) / 1440) * 100,
-              )
+              const width = (visualSegmentMinutes(segment) / 1440) * 100
               const height = Math.max(4, (duration / maxDuration) * 100)
               const selected = selectedKey === key
               return (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    setSelectedKey(key)
-                  }}
-                  onPointerDown={() => {
-                    clearHoldTimer()
-                    holdTimerRef.current = window.setTimeout(
-                      () => setSelectedKey(key),
-                      420,
-                    )
-                  }}
-                  onPointerUp={clearHoldTimer}
-                  onPointerCancel={clearHoldTimer}
-                  onPointerLeave={clearHoldTimer}
-                  onFocus={() => setSelectedKey(key)}
-                  className={`absolute bottom-0 touch-none rounded-t-lg border border-white/70 shadow-sm transition focus:outline-none focus:ring-2 focus:ring-[#17231f]/20 ${
-                    selected ? 'z-10 ring-2 ring-white ring-offset-2' : ''
-                  }`}
-                  style={{
-                    left: `${left}%`,
-                    width: `${Math.min(width, 100 - left)}%`,
-                    height: `${height}%`,
-                    minWidth: '0.7rem',
-                    backgroundColor: timer.color,
-                  }}
-                  aria-label={`${timer.name}: ${formatClock(segment.start)}–${segment.interval.active ? 'сейчас' : formatClock(segment.end)}, ${formatDuration(duration, false)}`}
-                />
+                <div key={key}>
+                  <span
+                    className={`pointer-events-none absolute bottom-0 rounded-t-sm shadow-sm transition ${
+                      selected ? 'z-10 ring-1 ring-white ring-offset-1' : ''
+                    }`}
+                    style={{
+                      left: `${left}%`,
+                      width: `${Math.min(width, 100 - left)}%`,
+                      minWidth: '1px',
+                      height: `${height}%`,
+                      backgroundColor: timer.color,
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      setSelectedKey(key)
+                    }}
+                    onPointerDown={() => {
+                      clearHoldTimer()
+                      holdTimerRef.current = window.setTimeout(
+                        () => setSelectedKey(key),
+                        420,
+                      )
+                    }}
+                    onPointerUp={clearHoldTimer}
+                    onPointerCancel={clearHoldTimer}
+                    onPointerLeave={clearHoldTimer}
+                    onFocus={() => setSelectedKey(key)}
+                    className="absolute bottom-0 z-20 min-h-6 w-6 -translate-x-1/2 touch-none rounded focus:outline-none focus:ring-2 focus:ring-[#17231f]/20"
+                    style={{
+                      left: `${Math.min(99, Math.max(1, left + width / 2))}%`,
+                      height: `${Math.max(12, height)}%`,
+                    }}
+                    aria-label={`${timer.name}: ${formatClock(segment.start)}–${segment.interval.active ? 'сейчас' : formatClock(segment.end)}, ${formatDuration(duration, false)}`}
+                  />
+                </div>
               )
             })}
           </div>
@@ -351,6 +392,68 @@ function DurationTimelineChart({
             )}
           </div>
         </div>
+      </div>
+    </div>
+  )
+}
+
+function IntervalList({
+  days,
+  timers,
+  period,
+}: {
+  days: DayView[]
+  timers: TimerDefinition[]
+  period: TimerPeriod
+}) {
+  const entries = days.flatMap((dayView) =>
+    dayView.segments.map((segment) => ({ day: dayView.day, segment })),
+  )
+  if (entries.length === 0) return null
+
+  return (
+    <div className="mt-5 border-t border-[#e7ece8] pt-4">
+      <h4 className="mb-2 text-[0.62rem] font-extrabold uppercase tracking-[0.12em] text-[#819089]">
+        Список интервалов
+      </h4>
+      <div className="grid gap-1.5 xl:grid-cols-2">
+        {entries.map(({ day, segment }) => {
+          const timer = timerFor(timers, segment.interval.timerId)
+          if (!timer) return null
+          const { d } = parseKey(day)
+          return (
+            <div
+              key={`${day}-${segmentKey(segment)}`}
+              className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-[#e8edea] bg-[#f9faf8] px-3 py-2"
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <span
+                  className="h-2 w-2 shrink-0 rounded-full"
+                  style={{ backgroundColor: timer.color }}
+                />
+                <div className="min-w-0">
+                  <strong className="block truncate text-[0.68rem] text-[#435049]">
+                    {timer.icon} {timer.name}
+                  </strong>
+                  {period === 'week' && (
+                    <span className="block text-[0.56rem] font-semibold text-[#8b9690]">
+                      {shortWeekday(day)}, {d}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="text-right">
+                <span className="block whitespace-nowrap text-[0.64rem] font-bold tabular-nums text-[#4e5b55]">
+                  {formatClock(segment.start)}–
+                  {segment.interval.active ? 'сейчас' : formatClock(segment.end)}
+                </span>
+                <span className="block text-[0.56rem] font-semibold text-[#8b9690]">
+                  {formatDuration(segment.end - segment.start, false)}
+                </span>
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -435,18 +538,15 @@ function DesktopHorizontalTimelines({
                 const timer = timerFor(timers, segment.interval.timerId)
                 if (!timer) return null
                 const left = (segment.startMinute / 1440) * 100
-                const width = Math.max(
-                  0.8,
-                  ((segment.endMinute - segment.startMinute) / 1440) * 100,
-                )
+                const width = (visualSegmentMinutes(segment) / 1440) * 100
                 return (
                   <span
                     key={segmentKey(segment)}
-                    className="absolute inset-y-1 overflow-hidden rounded-lg border border-white/70 px-1.5 text-[0.58rem] font-bold leading-7 text-white shadow-sm"
+                    className="absolute inset-y-1 overflow-hidden rounded-sm text-[0.58rem] font-bold leading-7 text-white shadow-sm"
                     style={{
                       left: `${left}%`,
                       width: `${Math.min(width, 100 - left)}%`,
-                      minWidth: '0.35rem',
+                      minWidth: '1px',
                       backgroundColor: timer.color,
                     }}
                     title={`${timer.name}: ${formatClock(segment.start)}–${segment.interval.active ? 'сейчас' : formatClock(segment.end)} · ${formatDuration(segment.end - segment.start, false)}`}
@@ -462,6 +562,164 @@ function DesktopHorizontalTimelines({
           </div>
         )
       })}
+      <IntervalList days={days} timers={timers} period={period} />
+    </div>
+  )
+}
+
+function MobileWeekTimeline({
+  days,
+  timers,
+  startHour,
+  endHour,
+}: {
+  days: DayView[]
+  timers: TimerDefinition[]
+  startHour: number
+  endHour: number
+}) {
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const holdTimerRef = useRef<number | undefined>(undefined)
+  const entries = days.flatMap((dayView, dayIndex) =>
+    dayView.segments.map((segment) => ({
+      day: dayView.day,
+      dayIndex,
+      segment,
+      key: `${dayView.day}-${segmentKey(segment)}`,
+    })),
+  )
+  const selectedEntry = entries.find((entry) => entry.key === selectedKey)
+  const selectedTimer = selectedEntry
+    ? timerFor(timers, selectedEntry.segment.interval.timerId)
+    : undefined
+  const scaleMinutes = (endHour - startHour) * 60
+
+  const clearHoldTimer = useCallback(() => {
+    if (holdTimerRef.current === undefined) return
+    window.clearTimeout(holdTimerRef.current)
+    holdTimerRef.current = undefined
+  }, [])
+
+  useEffect(() => clearHoldTimer, [clearHoldTimer])
+
+  return (
+    <div>
+      <div className="mb-2 grid grid-cols-[2rem_repeat(7,minmax(0,1fr))] gap-px">
+        <span />
+        {days.map((dayView) => {
+          const { d } = parseKey(dayView.day)
+          const current = dayView.day === todayKey()
+          return (
+            <div key={dayView.day} className="min-w-0 text-center">
+              <span className="block truncate text-[0.56rem] font-bold uppercase text-[#8c9791]">
+                {shortWeekday(dayView.day)}
+              </span>
+              <span
+                className={`mx-auto mt-1 grid h-6 w-6 place-items-center rounded-full text-[0.68rem] font-extrabold ${
+                  current ? 'bg-[#6d5dfc] text-white' : 'text-[#3e4c46]'
+                }`}
+              >
+                {d}
+              </span>
+              <span className="mt-1 block truncate text-[0.5rem] font-bold text-[#7e8a84]">
+                {formatCompactDuration(dayView.total)}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+      <div
+        className="relative ml-8 h-[26rem] rounded-xl bg-[#f4f6f3]"
+        onClick={() => setSelectedKey(null)}
+      >
+        {selectedEntry && selectedTimer && (
+          <IntervalPopover
+            segment={selectedEntry.segment}
+            timer={selectedTimer}
+            day={selectedEntry.day}
+            className="left-2 top-2"
+          />
+        )}
+        {Array.from(
+          { length: endHour - startHour + 1 },
+          (_, index) => startHour + index,
+        ).map((hour) => {
+          const top = ((hour - startHour) / (endHour - startHour)) * 100
+          return (
+            <div
+              key={hour}
+              className="absolute inset-x-0 border-t border-[#dfe5e1]"
+              style={{ top: `${top}%` }}
+            >
+              <span className="absolute -left-8 -top-2 w-7 text-right text-[0.5rem] font-semibold text-[#98a29d]">
+                {String(hour).padStart(2, '0')}:00
+              </span>
+            </div>
+          )
+        })}
+        {Array.from({ length: 8 }, (_, dayIndex) => (
+          <div
+            key={dayIndex}
+            className="absolute inset-y-0 border-l border-[#e1e6e3]"
+            style={{ left: `${(dayIndex / 7) * 100}%` }}
+          />
+        ))}
+        {entries.map(({ dayIndex, segment, key }) => {
+          const timer = timerFor(timers, segment.interval.timerId)
+          if (!timer) return null
+          const top = Math.max(
+            0,
+            ((segment.startMinute - startHour * 60) / scaleMinutes) * 100,
+          )
+          const height = Math.min(
+            100 - top,
+            (visualSegmentMinutes(segment) / scaleMinutes) * 100,
+          )
+          const selected = selectedKey === key
+          return (
+            <div key={key}>
+              <span
+                className={`pointer-events-none absolute rounded-sm shadow-sm ${
+                  selected ? 'z-10 ring-1 ring-white ring-offset-1' : ''
+                }`}
+                style={{
+                  left: `calc(${(dayIndex / 7) * 100}% + 2px)`,
+                  width: `calc(${100 / 7}% - 4px)`,
+                  top: `${top}%`,
+                  height: `${height}%`,
+                  minHeight: '1px',
+                  backgroundColor: timer.color,
+                }}
+              />
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setSelectedKey(key)
+                }}
+                onPointerDown={() => {
+                  clearHoldTimer()
+                  holdTimerRef.current = window.setTimeout(
+                    () => setSelectedKey(key),
+                    420,
+                  )
+                }}
+                onPointerUp={clearHoldTimer}
+                onPointerCancel={clearHoldTimer}
+                onPointerLeave={clearHoldTimer}
+                onFocus={() => setSelectedKey(key)}
+                className="absolute z-20 min-h-6 -translate-y-1/2 rounded focus:outline-none focus:ring-2 focus:ring-[#17231f]/20"
+                style={{
+                  left: `calc(${(dayIndex / 7) * 100}% + 1px)`,
+                  width: `calc(${100 / 7}% - 2px)`,
+                  top: `${Math.min(99, Math.max(1, top + height / 2))}%`,
+                }}
+                aria-label={`${timer.name}: ${formatClock(segment.start)}–${segment.interval.active ? 'сейчас' : formatClock(segment.end)}, ${formatDuration(segment.end - segment.start, false)}`}
+              />
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -748,6 +1006,7 @@ export function TimerScreen({
     timerRangeBounds(todayKey(), period).start,
   )
   const canMoveForward = selectedRangeStart < currentRangeStart
+  const isCurrentPeriod = selectedRangeStart === currentRangeStart
   const timers = snapshot?.timers ?? []
 
   return (
@@ -756,8 +1015,14 @@ export function TimerScreen({
         isMobile ? 'pb-40' : ''
       }`}
     >
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3 sm:mb-6">
-        <div>
+      <div
+        className={`mb-4 gap-3 sm:mb-6 ${
+          isMobile
+            ? 'grid grid-cols-1'
+            : 'flex flex-wrap items-start justify-between'
+        }`}
+      >
+        <div className="min-w-0">
           <p className="mb-1 text-[0.65rem] font-extrabold uppercase tracking-[0.16em] text-[#819089]">
             {period === 'day' ? 'Ваш день' : 'Ваша неделя'}
           </p>
@@ -765,7 +1030,13 @@ export function TimerScreen({
             {formatPeriod(selectedDate, period)}
           </h2>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
+        <div
+          className={`items-center gap-2 ${
+            isMobile
+              ? 'grid w-full grid-cols-[minmax(0,1fr)_auto]'
+              : 'flex flex-wrap justify-end'
+          }`}
+        >
           {!isMobile && (
             <div className="inline-flex h-11 items-center rounded-2xl border border-blue-200 bg-white p-1 shadow-sm">
               {(['day', 'week'] as const).map((value) => (
@@ -785,7 +1056,11 @@ export function TimerScreen({
               ))}
             </div>
           )}
-          <div className="flex items-center gap-1 rounded-2xl border border-[#dfe6e1] bg-white/80 p-1 shadow-sm">
+          <div
+            className={`flex min-w-0 items-center gap-1 rounded-2xl border border-[#dfe6e1] bg-white/80 p-1 shadow-sm ${
+              isMobile ? 'w-full' : 'w-56'
+            }`}
+          >
             <button
               type="button"
               onClick={() =>
@@ -805,7 +1080,7 @@ export function TimerScreen({
               onChange={(event) =>
                 setSelectedDate(event.target.value || todayKey())
               }
-              className="h-9 min-w-0 max-w-32 bg-transparent px-1 text-center text-xs font-bold text-[#36433d] outline-none"
+              className="h-9 min-w-0 flex-1 bg-transparent px-1 text-center text-xs font-bold text-[#36433d] outline-none"
             />
             <button
               type="button"
@@ -821,6 +1096,18 @@ export function TimerScreen({
               <ChevronRight className="h-5 w-5" />
             </button>
           </div>
+          <button
+            type="button"
+            disabled={isCurrentPeriod}
+            onClick={() => setSelectedDate(todayKey())}
+            className={`h-9 shrink-0 rounded-xl px-2.5 text-[0.62rem] font-bold transition disabled:cursor-default disabled:opacity-35 ${
+              isMobile
+                ? 'bg-[#ebe8ff] text-[#6757ed] active:bg-[#ddd8ff]'
+                : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
+            }`}
+          >
+            Сегодня
+          </button>
         </div>
       </div>
 
@@ -971,103 +1258,12 @@ export function TimerScreen({
             </div>
           ) : (
             <div className="pt-4">
-              <div className="mb-2 grid grid-cols-[2rem_repeat(7,minmax(0,1fr))] gap-px">
-                <span />
-                {dayViews.map((dayView) => {
-                  const { d } = parseKey(dayView.day)
-                  const current = dayView.day === todayKey()
-                  return (
-                    <div key={dayView.day} className="min-w-0 text-center">
-                      <span className="block truncate text-[0.56rem] font-bold uppercase text-[#8c9791]">
-                        {shortWeekday(dayView.day)}
-                      </span>
-                      <span
-                        className={`mx-auto mt-1 grid h-6 w-6 place-items-center rounded-full text-[0.68rem] font-extrabold ${
-                          current
-                            ? 'bg-[#6d5dfc] text-white'
-                            : 'text-[#3e4c46]'
-                        }`}
-                      >
-                        {d}
-                      </span>
-                      <span className="mt-1 block truncate text-[0.5rem] font-bold text-[#7e8a84]">
-                        {formatCompactDuration(dayView.total)}
-                      </span>
-                    </div>
-                  )
-                })}
-              </div>
-              <div className="relative ml-8 h-[26rem] rounded-xl bg-[#f4f6f3]">
-                {Array.from(
-                  { length: weekScale.endHour - weekScale.startHour + 1 },
-                  (_, index) => weekScale.startHour + index,
-                ).map((hour) => {
-                  const top =
-                    ((hour - weekScale.startHour) /
-                      (weekScale.endHour - weekScale.startHour)) *
-                    100
-                  return (
-                    <div
-                      key={hour}
-                      className="absolute inset-x-0 border-t border-[#dfe5e1]"
-                      style={{ top: `${top}%` }}
-                    >
-                      <span className="absolute -left-8 -top-2 w-7 text-right text-[0.5rem] font-semibold text-[#98a29d]">
-                        {String(hour).padStart(2, '0')}:00
-                      </span>
-                    </div>
-                  )
-                })}
-                {dayViews.map((dayView, dayIndex) => (
-                  <div
-                    key={dayView.day}
-                    className="absolute inset-y-0 border-l border-[#e1e6e3]"
-                    style={{ left: `${(dayIndex / 7) * 100}%` }}
-                  />
-                ))}
-                {dayViews.flatMap((dayView, dayIndex) =>
-                  dayView.segments.map((segment) => {
-                    const timer = timerFor(
-                      timers,
-                      segment.interval.timerId,
-                    )
-                    if (!timer) return null
-                    const scaleMinutes =
-                      (weekScale.endHour - weekScale.startHour) * 60
-                    const top = Math.max(
-                      0,
-                      ((segment.startMinute - weekScale.startHour * 60) /
-                        scaleMinutes) *
-                        416,
-                    )
-                    const height = Math.min(
-                      416 - top,
-                      Math.max(
-                        20,
-                        ((segment.endMinute - segment.startMinute) /
-                          scaleMinutes) *
-                          416,
-                      ),
-                    )
-                    return (
-                      <div
-                        key={`${dayView.day}-${segmentKey(segment)}`}
-                        className="absolute grid place-items-center overflow-hidden rounded-lg border border-white/70 text-[0.62rem] font-bold text-white shadow-sm"
-                        style={{
-                          left: `calc(${(dayIndex / 7) * 100}% + 2px)`,
-                          width: `calc(${100 / 7}% - 4px)`,
-                          top,
-                          height,
-                          backgroundColor: timer.color,
-                        }}
-                        title={`${timer.name}: ${formatClock(segment.start)}–${formatClock(segment.end)}`}
-                      >
-                        {timer.icon}
-                      </div>
-                    )
-                  }),
-                )}
-              </div>
+              <MobileWeekTimeline
+                days={dayViews}
+                timers={timers}
+                startHour={weekScale.startHour}
+                endHour={weekScale.endHour}
+              />
             </div>
           )}
         </section>
