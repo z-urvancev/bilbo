@@ -72,6 +72,7 @@ import {
   parsePersisted,
   parseSyncEventInput,
 } from './validation'
+import { TimerScreen } from './timer/TimerScreen'
 
 const STORAGE_KEY = 'habit-calendar-v2'
 const PENDING_KEY_PREFIX = 'habit-calendar-pending-v2:'
@@ -170,7 +171,7 @@ function friendlyAuthError(e: unknown): string {
   return `Не удалось выполнить действие: ${msg}`
 }
 
-type Screen = 'tracker' | 'habits'
+type Screen = 'tracker' | 'habits' | 'timers'
 type DynMode = 'day' | 'week' | 'month' | 'year'
 type MobileTrackerTab = 'marks' | 'analytics'
 type MobileMarksView = 'week' | 'month'
@@ -1532,6 +1533,16 @@ export default function App() {
           <div className="absolute right-0 z-[70] mt-1 min-w-[8rem] rounded-lg border border-teal-200 bg-white p-1 shadow-lg">
             <button
               type="button"
+              onClick={() => {
+                setAuthMenuOpen(false)
+                setScreen(screen === 'timers' ? 'tracker' : 'timers')
+              }}
+              className="w-full rounded-md px-2 py-1.5 text-left text-sm text-teal-800 hover:bg-teal-50"
+            >
+              {screen === 'timers' ? 'Трекер привычек' : 'Мультитаймер'}
+            </button>
+            <button
+              type="button"
               disabled={!supabase}
               onClick={async () => {
                 setAuthMenuOpen(false)
@@ -1554,15 +1565,29 @@ export default function App() {
     <div
       className={
         isMobile
-          ? 'fixed inset-x-0 top-0 flex h-dvh min-h-0 flex-col overflow-hidden bg-[#f9f9f9] pt-[env(safe-area-inset-top,0px)]'
-          : 'min-h-svh bg-gradient-to-b from-teal-50 to-white pb-[env(safe-area-inset-bottom,0px)] pt-[env(safe-area-inset-top,0px)]'
+          ? `fixed inset-x-0 top-0 flex h-dvh min-h-0 flex-col overflow-hidden pt-[env(safe-area-inset-top,0px)] ${
+              screen === 'timers' ? 'bg-[#f5f7f3]' : 'bg-[#f9f9f9]'
+            }`
+          : `min-h-svh pb-[env(safe-area-inset-bottom,0px)] pt-[env(safe-area-inset-top,0px)] ${
+              screen === 'timers'
+                ? 'bg-gradient-to-b from-[#eef3ef] to-[#fbfcfa]'
+                : 'bg-gradient-to-b from-teal-50 to-white'
+            }`
       }
     >
       <header
         className={
           isMobile
-            ? 'shrink-0 border-b border-black/[0.06] bg-[#f7f7f7] px-3 pb-3 pt-3 text-neutral-900'
-            : 'border-b border-teal-200 bg-teal-700 px-3 py-3 text-white shadow-md sm:px-4 sm:py-4'
+            ? `shrink-0 border-b px-3 pb-3 pt-3 text-neutral-900 ${
+                screen === 'timers'
+                  ? 'border-[#dfe6e1] bg-[#f5f7f3]'
+                  : 'border-black/[0.06] bg-[#f7f7f7]'
+              }`
+            : `px-3 py-3 text-white shadow-md sm:px-4 sm:py-4 ${
+                screen === 'timers'
+                  ? 'border-b border-[#2c6854] bg-[#174e3b]'
+                  : 'border-b border-teal-200 bg-teal-700'
+              }`
         }
       >
         <div className="mx-auto max-w-7xl">
@@ -1602,10 +1627,19 @@ export default function App() {
                   <ChevronRight className="h-5 w-5" />
                 </button>
               </div>
-            ) : (
+            ) : screen === 'habits' ? (
               <h1 className="text-center text-lg font-semibold tracking-tight text-neutral-900">
                 Привычки
               </h1>
+            ) : (
+              <div className="flex min-h-10 items-center justify-center gap-2">
+                <span className="grid h-8 w-8 place-items-center rounded-xl bg-[#ebe8ff] text-[#6d5dfc]">
+                  <Clock className="h-4.5 w-4.5" strokeWidth={2.2} />
+                </span>
+                <h1 className="text-center text-lg font-bold tracking-[-0.025em] text-[#25312c]">
+                  Мультитаймер
+                </h1>
+              </div>
             )
           ) : (
             <div className="flex items-center gap-2 sm:gap-3">
@@ -1705,6 +1739,16 @@ export default function App() {
             Войти
           </button>
         </div>
+      </main>
+      ) : screen === 'timers' ? (
+      <main
+        className={`mx-auto w-full max-w-7xl px-3 py-5 sm:px-4 sm:py-8 ${
+          isMobile
+            ? 'min-h-0 flex-1 overflow-y-auto overscroll-y-contain pb-28 [-webkit-overflow-scrolling:touch]'
+            : ''
+        }`}
+      >
+        <TimerScreen userId={session.user.id} isMobile={isMobile} />
       </main>
       ) : screen === 'habits' ? (
       <main
@@ -2861,6 +2905,17 @@ export default function App() {
               <p className="mb-3 truncate text-sm font-medium text-teal-900">
                 {profileName}
               </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMenuOpen(false)
+                  setScreen(screen === 'timers' ? 'tracker' : 'timers')
+                  setMobileTrackerTab('marks')
+                }}
+                className="mb-2 w-full rounded-xl border border-teal-200 bg-teal-50 py-3 text-sm font-semibold text-teal-900"
+              >
+                {screen === 'timers' ? 'Открыть трекер привычек' : 'Открыть мультитаймер'}
+              </button>
               <button
                 type="button"
                 disabled={!supabase}

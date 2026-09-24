@@ -21,6 +21,25 @@ async function applyEvent(db, userId, clientEventId, kind, payload, revision) {
   return result.rows[0]
 }
 
+async function applyTimerCommand(
+  db,
+  clientCommandId,
+  action,
+  timerId,
+  revision,
+) {
+  const result = await db.query(
+    `select * from public.apply_timer_command(
+      $1::text,
+      $2::text,
+      $3::text,
+      $4::bigint
+    )`,
+    [clientCommandId, action, timerId, revision],
+  )
+  return result.rows[0]
+}
+
 test('transactional sync migration enforces CAS, idempotency and tombstones', async () => {
   const db = new PGlite()
   try {
@@ -28,7 +47,7 @@ test('transactional sync migration enforces CAS, idempotency and tombstones', as
       create role anon nologin;
       create role authenticated nologin;
       create schema auth;
-      create table auth.users (id uuid primary key);
+      create table auth.users (id uuid primary key, email text);
       create function auth.uid()
       returns uuid
       language sql
@@ -37,6 +56,9 @@ test('transactional sync migration enforces CAS, idempotency and tombstones', as
         select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
       $$;
       grant usage on schema auth to authenticated;
+      insert into auth.users (id, email) values
+        ('${USER_A}', 'zahvinar358@gmail.com'),
+        ('${USER_B}', 'other@example.com');
     `)
 
     const migrationsUrl = new URL('../supabase/migrations/', import.meta.url)
@@ -48,10 +70,109 @@ test('transactional sync migration enforces CAS, idempotency and tombstones', as
       await db.exec(migration)
     }
     await db.exec(`
-      insert into auth.users (id) values ('${USER_A}'), ('${USER_B}');
       select set_config('request.jwt.claim.sub', '${USER_A}', false);
       set role authenticated;
     `)
+
+    const seededTimers = await db.query(
+      `select id, name from public.timer_definitions
+       where user_id = $1::uuid order by sort_order`,
+      [USER_A],
+    )
+    assert.deepEqual(
+      seededTimers.rows.map((row) => row.id),
+      ['deep-work', 'meeting', 'ad-hoc', 'break', 'chill-work'],
+    )
+    const seededTotals = await db.query(
+      `select count(*)::int as rows, sum(duration_ms)::bigint as duration_ms
+       from public.timer_daily_totals where user_id = $1::uuid`,
+      [USER_A],
+    )
+    assert.deepEqual(seededTotals.rows[0], {
+      rows: 36,
+      duration_ms: 310166793,
+    })
+
+    const directStateUpdate = await db.query(
+      `update public.timer_state set revision = 99
+       where user_id = $1::uuid returning revision`,
+      [USER_A],
+    )
+    assert.equal(directStateUpdate.rows.length, 0)
+
+    await assert.rejects(
+      () =>
+        db.query(
+          `insert into public.timer_intervals (
+            user_id, timer_id, started_at, ended_at, client_command_id
+          ) values ($1::uuid, 'deep-work', now() - interval '1 minute', now(), 'direct')`,
+          [USER_A],
+        ),
+      (error) => error.code === '42501',
+    )
+
+    const timerStart = await applyTimerCommand(
+      db,
+      'timer-start',
+      'start',
+      'deep-work',
+      0,
+    )
+    assert.equal(timerStart.applied, true)
+    assert.equal(timerStart.revision, 1)
+    assert.equal(timerStart.active_timer_id, 'deep-work')
+
+    const timerDuplicate = await applyTimerCommand(
+      db,
+      'timer-start',
+      'start',
+      'deep-work',
+      0,
+    )
+    assert.equal(timerDuplicate.applied, false)
+    assert.equal(timerDuplicate.revision, 1)
+    assert.equal(timerDuplicate.active_timer_id, 'deep-work')
+
+    const timerSwitch = await applyTimerCommand(
+      db,
+      'timer-switch',
+      'start',
+      'meeting',
+      1,
+    )
+    assert.equal(timerSwitch.applied, true)
+    assert.equal(timerSwitch.revision, 2)
+    assert.equal(timerSwitch.active_timer_id, 'meeting')
+    assert.ok(timerSwitch.completed_interval_id)
+
+    await assert.rejects(
+      () => applyTimerCommand(db, 'timer-stale', 'stop', 'meeting', 1),
+      (error) => error.code === '40001',
+    )
+    await assert.rejects(
+      () => applyTimerCommand(db, 'timer-wrong-stop', 'stop', 'deep-work', 2),
+      (error) => error.code === '40001',
+    )
+
+    const timerStop = await applyTimerCommand(
+      db,
+      'timer-stop',
+      'stop',
+      'meeting',
+      2,
+    )
+    assert.equal(timerStop.applied, true)
+    assert.equal(timerStop.revision, 3)
+    assert.equal(timerStop.active_timer_id, null)
+    const timerIntervals = await db.query(
+      `select timer_id from public.timer_intervals
+       where user_id = $1::uuid order by id`,
+      [USER_A],
+    )
+    assert.deepEqual(
+      timerIntervals.rows.map((row) => row.timer_id),
+      ['deep-work', 'meeting'],
+    )
 
     const initialHabit = {
       id: 'habit-1',
