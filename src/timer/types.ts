@@ -8,6 +8,8 @@ export type TimerDefinition = {
   createdAt: string
 }
 
+export type TimerPeriod = 'day' | 'week'
+
 export type TimerState = {
   revision: number
   activeTimerId: string | null
@@ -24,6 +26,7 @@ export type TimerInterval = {
 
 export type TimerDailyTotal = {
   timerId: string
+  day: string
   durationMs: number
   source: string
 }

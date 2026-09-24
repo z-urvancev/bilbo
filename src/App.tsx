@@ -1523,24 +1523,20 @@ export default function App() {
             e.stopPropagation()
             setAuthMenuOpen((v) => !v)
           }}
-          className="rounded-md border border-teal-300/70 bg-teal-800/70 px-2.5 py-1.5 text-xs font-medium text-teal-50 hover:bg-teal-800 sm:text-sm"
+          className={`rounded-md px-2.5 py-1.5 text-xs font-medium sm:text-sm ${
+            screen === 'timers'
+              ? 'border border-blue-300/70 bg-blue-800/70 text-blue-50 hover:bg-blue-800'
+              : 'border border-teal-300/70 bg-teal-800/70 text-teal-50 hover:bg-teal-800'
+          }`}
         >
           <span className={compactEmail ? 'max-w-[10rem] truncate' : 'max-w-[14rem] truncate'}>
             {profileName}
           </span>
         </button>
         {authMenuOpen && (
-          <div className="absolute right-0 z-[70] mt-1 min-w-[8rem] rounded-lg border border-teal-200 bg-white p-1 shadow-lg">
-            <button
-              type="button"
-              onClick={() => {
-                setAuthMenuOpen(false)
-                setScreen(screen === 'timers' ? 'tracker' : 'timers')
-              }}
-              className="w-full rounded-md px-2 py-1.5 text-left text-sm text-teal-800 hover:bg-teal-50"
-            >
-              {screen === 'timers' ? 'Трекер привычек' : 'Мультитаймер'}
-            </button>
+          <div className={`absolute right-0 z-[70] mt-1 min-w-[8rem] rounded-lg border bg-white p-1 shadow-lg ${
+            screen === 'timers' ? 'border-blue-200' : 'border-teal-200'
+          }`}>
             <button
               type="button"
               disabled={!supabase}
@@ -1551,7 +1547,11 @@ export default function App() {
                 if (!supabase) return
                 await supabase.auth.signOut()
               }}
-              className="w-full rounded-md px-2 py-1.5 text-left text-sm text-teal-800 hover:bg-teal-50 disabled:opacity-50"
+              className={`w-full rounded-md px-2 py-1.5 text-left text-sm disabled:opacity-50 ${
+                screen === 'timers'
+                  ? 'text-blue-800 hover:bg-blue-50'
+                  : 'text-teal-800 hover:bg-teal-50'
+              }`}
             >
               Выйти
             </button>
@@ -1570,7 +1570,7 @@ export default function App() {
             }`
           : `min-h-svh pb-[env(safe-area-inset-bottom,0px)] pt-[env(safe-area-inset-top,0px)] ${
               screen === 'timers'
-                ? 'bg-gradient-to-b from-[#eef3ef] to-[#fbfcfa]'
+                ? 'bg-gradient-to-b from-blue-50 to-white'
                 : 'bg-gradient-to-b from-teal-50 to-white'
             }`
       }
@@ -1585,7 +1585,7 @@ export default function App() {
               }`
             : `px-3 py-3 text-white shadow-md sm:px-4 sm:py-4 ${
                 screen === 'timers'
-                  ? 'border-b border-[#2c6854] bg-[#174e3b]'
+                  ? 'border-b border-blue-300 bg-blue-700'
                   : 'border-b border-teal-200 bg-teal-700'
               }`
         }
@@ -1632,7 +1632,18 @@ export default function App() {
                 Привычки
               </h1>
             ) : (
-              <div className="flex min-h-10 items-center justify-center gap-2">
+              <div className="relative flex min-h-10 items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setScreen('tracker')
+                    setMobileTrackerTab('marks')
+                  }}
+                  className="absolute left-0 grid h-9 w-9 place-items-center rounded-full bg-white text-[#33413b] shadow-sm ring-1 ring-black/5 active:bg-neutral-50"
+                  aria-label="Назад к трекеру привычек"
+                >
+                  <ChevronLeft className="h-5 w-5" />
+                </button>
                 <span className="grid h-8 w-8 place-items-center rounded-xl bg-[#ebe8ff] text-[#6d5dfc]">
                   <Clock className="h-4.5 w-4.5" strokeWidth={2.2} />
                 </span>
@@ -1648,14 +1659,18 @@ export default function App() {
                   <h1 className="shrink-0 text-lg font-semibold tracking-tight sm:text-2xl">
                     Bilbo
                   </h1>
-                  <nav className="flex shrink-0 rounded-lg bg-teal-800/60 p-0.5 text-sm">
+                  <nav className={`flex shrink-0 rounded-lg p-0.5 text-sm ${
+                    screen === 'timers' ? 'bg-blue-800/60' : 'bg-teal-800/60'
+                  }`}>
                     <button
                       type="button"
                       onClick={() => setScreen('tracker')}
                       className={`rounded-md px-3 py-1.5 font-medium transition ${
                         screen === 'tracker'
                           ? 'bg-white text-teal-800 shadow'
-                          : 'text-teal-100 hover:bg-teal-800/80'
+                          : screen === 'timers'
+                            ? 'text-blue-100 hover:bg-blue-800/80'
+                            : 'text-teal-100 hover:bg-teal-800/80'
                       }`}
                     >
                       Трекер
@@ -1666,10 +1681,23 @@ export default function App() {
                       className={`rounded-md px-3 py-1.5 font-medium transition ${
                         screen === 'habits'
                           ? 'bg-white text-teal-800 shadow'
-                          : 'text-teal-100 hover:bg-teal-800/80'
+                          : screen === 'timers'
+                            ? 'text-blue-100 hover:bg-blue-800/80'
+                            : 'text-teal-100 hover:bg-teal-800/80'
                       }`}
                     >
                       Привычки
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setScreen('timers')}
+                      className={`rounded-md px-3 py-1.5 font-medium transition ${
+                        screen === 'timers'
+                          ? 'bg-white text-blue-800 shadow'
+                          : 'text-teal-100 hover:bg-teal-800/80'
+                      }`}
+                    >
+                      Мультитаймер
                     </button>
                   </nav>
                   {screen === 'tracker' && (
@@ -1744,7 +1772,7 @@ export default function App() {
       <main
         className={`mx-auto w-full max-w-7xl px-3 py-5 sm:px-4 sm:py-8 ${
           isMobile
-            ? 'min-h-0 flex-1 overflow-y-auto overscroll-y-contain pb-28 [-webkit-overflow-scrolling:touch]'
+            ? 'min-h-0 flex-1 overflow-y-auto overscroll-y-contain pb-6 [-webkit-overflow-scrolling:touch]'
             : ''
         }`}
       >
@@ -2890,7 +2918,7 @@ export default function App() {
         </button>
       )}
 
-      {isMobile && (
+      {isMobile && screen !== 'timers' && (
         <>
           {authMenuOpen && session?.user && (
             <button
@@ -2909,12 +2937,12 @@ export default function App() {
                 type="button"
                 onClick={() => {
                   setAuthMenuOpen(false)
-                  setScreen(screen === 'timers' ? 'tracker' : 'timers')
+                  setScreen('timers')
                   setMobileTrackerTab('marks')
                 }}
                 className="mb-2 w-full rounded-xl border border-teal-200 bg-teal-50 py-3 text-sm font-semibold text-teal-900"
               >
-                {screen === 'timers' ? 'Открыть трекер привычек' : 'Открыть мультитаймер'}
+                Мультитаймер
               </button>
               <button
                 type="button"

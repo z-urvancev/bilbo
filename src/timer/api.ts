@@ -5,6 +5,7 @@ import type {
   TimerDailyTotal,
   TimerDefinition,
   TimerInterval,
+  TimerPeriod,
   TimerSnapshot,
   TimerState,
 } from './types'
@@ -35,6 +36,7 @@ type DbTimerInterval = {
 
 type DbDailyTotal = {
   timer_id: string
+  day: string
   duration_ms: number
   source: string
 }
@@ -68,10 +70,25 @@ function throwApiError(error: { message?: string; code?: string } | null) {
   throw new TimerApiError(error.message || 'Ошибка Supabase', error.code)
 }
 
-export function timerDayBounds(dayKey: string): { start: Date; end: Date } {
+function localDateKey(value: Date): string {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+export function timerRangeBounds(
+  dayKey: string,
+  period: TimerPeriod = 'day',
+): { start: Date; end: Date } {
   const [year, month, day] = dayKey.split('-').map(Number)
   const start = new Date(year!, month! - 1, day!)
-  const end = new Date(year!, month! - 1, day! + 1)
+  if (period === 'week') {
+    const weekdayFromMonday = (start.getDay() + 6) % 7
+    start.setDate(start.getDate() - weekdayFromMonday)
+  }
+  const end = new Date(start)
+  end.setDate(start.getDate() + (period === 'week' ? 7 : 1))
   return { start, end }
 }
 
@@ -115,9 +132,10 @@ function stateFromRow(row: DbTimerState | null): TimerState {
 export async function fetchTimerSnapshot(
   userId: string,
   dayKey: string,
+  period: TimerPeriod = 'day',
 ): Promise<TimerSnapshot> {
   const client = ensureClient()
-  const { start, end } = timerDayBounds(dayKey)
+  const { start, end } = timerRangeBounds(dayKey, period)
 
   const definitionsPromise = client
     .from('timer_definitions')
@@ -148,9 +166,11 @@ export async function fetchTimerSnapshot(
 
   const totalsPromise = client
     .from('timer_daily_totals')
-    .select('timer_id,duration_ms,source')
+    .select('timer_id,day,duration_ms,source')
     .eq('user_id', userId)
-    .eq('day', dayKey)
+    .gte('day', localDateKey(start))
+    .lt('day', localDateKey(end))
+    .order('day', { ascending: false })
     .order('timer_id', { ascending: true })
 
   const [definitionsResult, stateResult, intervalRows, totalsResult] =
@@ -174,6 +194,7 @@ export async function fetchTimerSnapshot(
     importedTotals: ((totalsResult.data ?? []) as DbDailyTotal[]).map(
       (row): TimerDailyTotal => ({
         timerId: row.timer_id,
+        day: row.day,
         durationMs: row.duration_ms,
         source: row.source,
       }),
