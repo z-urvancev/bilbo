@@ -19,6 +19,7 @@ import { supabase } from '../lib/supabase'
 import {
   applyTimerCommand,
   fetchTimerSnapshot,
+  getCachedTimerSnapshot,
   invalidateTimerSnapshotCache,
   isTimerConflict,
   recordTimerEvent,
@@ -286,7 +287,9 @@ function isNetworkish(error: unknown): boolean {
     text.includes('network') ||
     text.includes('fetch') ||
     text.includes('load failed') ||
-    text.includes('timeout')
+    text.includes('timeout') ||
+    text.includes('abort') ||
+    text.includes('время ожидания')
   )
 }
 
@@ -1021,20 +1024,48 @@ export function TimerScreen({
     useState<TimerEventKind | null>(null)
   const [error, setError] = useState<string | null>(null)
   const loadGenerationRef = useRef(0)
+  const renderedSelectionRef = useRef<string | null>(null)
   const eventFeedbackTimerRef = useRef<number | undefined>(undefined)
 
   const reload = useCallback(
     async (quiet = false) => {
       const generation = ++loadGenerationRef.current
-      if (!quiet) setLoading(true)
+      const selectionKey = `${period}:${selectedDate}`
+      const cached = getCachedTimerSnapshot(userId, selectedDate, period)
+      if (cached) {
+        setSnapshot((current) =>
+          renderedSelectionRef.current === selectionKey && current
+            ? current
+            : cached,
+        )
+        renderedSelectionRef.current = selectionKey
+        if (!quiet) setLoading(false)
+      } else if (!quiet) {
+        setLoading(true)
+      }
       try {
-        const next = await fetchTimerSnapshot(userId, selectedDate, period)
+        let next: TimerSnapshot | null = null
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            next = await fetchTimerSnapshot(userId, selectedDate, period)
+            break
+          } catch (nextError) {
+            if (attempt === 0 && isNetworkish(nextError)) continue
+            throw nextError
+          }
+        }
+        if (!next) throw new Error('Сервер не вернул данные таймера')
         if (generation !== loadGenerationRef.current) return
         setSnapshot(next)
+        renderedSelectionRef.current = selectionKey
         setError(null)
       } catch (nextError) {
         if (generation !== loadGenerationRef.current) return
-        setError(timerErrorText(nextError))
+        setError(
+          cached
+            ? 'Сервер отвечает медленно. Показана сохранённая версия.'
+            : timerErrorText(nextError),
+        )
       } finally {
         if (generation === loadGenerationRef.current) setLoading(false)
       }

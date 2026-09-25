@@ -966,7 +966,9 @@ export default function App() {
 
   useEffect(() => {
     const onVis = () => {
-      if (document.visibilityState === 'visible') void pullIncremental()
+      if (document.visibilityState === 'visible' && screen !== 'timers') {
+        void pullIncremental()
+      }
       if (document.visibilityState === 'hidden') void flushPendingInternal()
     }
     const onPageHide = () => {
@@ -978,32 +980,48 @@ export default function App() {
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('pagehide', onPageHide)
     }
-  }, [pullIncremental, flushPendingInternal])
+  }, [screen, pullIncremental, flushPendingInternal])
 
   useEffect(() => {
-    if (!sessionUserId || supabaseSyncPhase !== 'ready') return
+    if (
+      !sessionUserId ||
+      supabaseSyncPhase !== 'ready' ||
+      screen === 'timers'
+    )
+      return
     void pullIncremental()
     const onOnline = () => {
       void pullIncremental()
     }
     const t = window.setInterval(() => {
       void checkServerFreshness()
-    }, 5000)
+    }, 30_000)
     window.addEventListener('online', onOnline)
     return () => {
       window.clearInterval(t)
       window.removeEventListener('online', onOnline)
     }
-  }, [sessionUserId, supabaseSyncPhase, pullIncremental, checkServerFreshness])
+  }, [
+    sessionUserId,
+    supabaseSyncPhase,
+    screen,
+    pullIncremental,
+    checkServerFreshness,
+  ])
 
   useEffect(() => {
-    if (!sessionUserId || supabaseSyncPhase !== 'ready' || !supabaseConfigured)
+    if (
+      !sessionUserId ||
+      supabaseSyncPhase !== 'ready' ||
+      !supabaseConfigured ||
+      screen === 'timers'
+    )
       return
     const uid = sessionUserId
     return subscribeToSyncEvents(uid, () => {
       void pullIncremental()
     })
-  }, [sessionUserId, supabaseSyncPhase, pullIncremental])
+  }, [sessionUserId, supabaseSyncPhase, screen, pullIncremental])
 
   const dim = daysInMonth(y, m0)
   const today = new Date()
@@ -1740,7 +1758,7 @@ export default function App() {
           )}
         </div>
       </header>
-      {syncErr && (
+      {syncErr && screen !== 'timers' && (
         <div className="mx-auto mt-3 max-w-7xl rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
           {syncErr}
         </div>

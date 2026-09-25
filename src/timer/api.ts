@@ -61,6 +61,9 @@ const TIMER_READ_TIMEOUT_MS = 15_000
 const CURRENT_WEEK_CACHE_TTL_MS = 60_000
 const HISTORICAL_CACHE_TTL_MS = 24 * 60 * 60 * 1000
 const MAX_HISTORICAL_CACHE_ENTRIES = 32
+const PERSISTED_CURRENT_WEEK_MAX_AGE_MS = 24 * 60 * 60 * 1000
+const PERSISTED_HISTORY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
+const TIMER_CACHE_STORAGE_PREFIX = 'habit-calendar:timer-cache:v1:'
 
 type DbTimerSnapshot = {
   definitions: DbTimerDefinition[]
@@ -75,10 +78,84 @@ type TimerWeekCacheEntry = {
   snapshot: TimerSnapshot
 }
 
+type PersistedTimerCacheEntry = {
+  key: string
+  savedAt: number
+  snapshot: TimerSnapshot
+}
+
 const currentWeekCache = new Map<string, TimerWeekCacheEntry>()
 const currentWeekRequests = new Map<string, Promise<TimerSnapshot>>()
 const currentWeekCacheEpoch = new Map<string, number>()
 const historicalSnapshotCache = new Map<string, TimerWeekCacheEntry>()
+
+function isTimerSnapshot(value: unknown): value is TimerSnapshot {
+  if (!value || typeof value !== 'object') return false
+  const snapshot = value as Partial<TimerSnapshot>
+  return (
+    Array.isArray(snapshot.timers) &&
+    Array.isArray(snapshot.intervals) &&
+    Array.isArray(snapshot.events) &&
+    Array.isArray(snapshot.importedTotals) &&
+    Boolean(snapshot.state && typeof snapshot.state === 'object')
+  )
+}
+
+function timerCacheStorageKey(userId: string): string {
+  return `${TIMER_CACHE_STORAGE_PREFIX}${userId}`
+}
+
+function readPersistedTimerCache(userId: string): PersistedTimerCacheEntry[] {
+  try {
+    const raw = globalThis.localStorage?.getItem(timerCacheStorageKey(userId))
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((entry): entry is PersistedTimerCacheEntry => {
+      if (!entry || typeof entry !== 'object') return false
+      const candidate = entry as Partial<PersistedTimerCacheEntry>
+      return (
+        typeof candidate.key === 'string' &&
+        typeof candidate.savedAt === 'number' &&
+        isTimerSnapshot(candidate.snapshot)
+      )
+    })
+  } catch {
+    return []
+  }
+}
+
+function persistTimerSnapshot(
+  userId: string,
+  key: string,
+  snapshot: TimerSnapshot,
+): void {
+  try {
+    const entries = readPersistedTimerCache(userId).filter(
+      (entry) => entry.key !== key,
+    )
+    entries.push({ key, savedAt: Date.now(), snapshot })
+    globalThis.localStorage?.setItem(
+      timerCacheStorageKey(userId),
+      JSON.stringify(entries.slice(-MAX_HISTORICAL_CACHE_ENTRIES)),
+    )
+  } catch {
+    // Cache persistence is best-effort; network data remains authoritative.
+  }
+}
+
+function readPersistedTimerSnapshot(
+  userId: string,
+  key: string,
+  maxAgeMs: number,
+): TimerSnapshot | null {
+  const now = Date.now()
+  const entry = readPersistedTimerCache(userId).find(
+    (candidate) => candidate.key === key,
+  )
+  if (!entry || now - entry.savedAt > maxAgeMs) return null
+  return entry.snapshot
+}
 
 function cacheHistoricalSnapshot(
   key: string,
@@ -129,7 +206,14 @@ async function withTimerReadTimeout<T>(
     TIMER_READ_TIMEOUT_MS,
   )
   try {
-    return await read(controller.signal)
+    const result = await read(controller.signal)
+    if (controller.signal.aborted) {
+      throw new TimerApiError(
+        `Не удалось загрузить ${label}: превышено время ожидания.`,
+        'TIMER_READ_TIMEOUT',
+      )
+    }
+    return result
   } catch (error) {
     if (controller.signal.aborted) {
       throw new TimerApiError(
@@ -247,6 +331,47 @@ function isCurrentTimerWeek(dayKey: string): boolean {
   )
 }
 
+export function getCachedTimerSnapshot(
+  userId: string,
+  dayKey: string,
+  period: TimerPeriod,
+): TimerSnapshot | null {
+  if (isCurrentTimerWeek(dayKey)) {
+    const key = timerWeekCacheKey(userId, dayKey)
+    const memory = currentWeekCache.get(key)
+    if (memory && memory.expiresAt > Date.now()) {
+      return snapshotForPeriod(memory.snapshot, dayKey, period)
+    }
+    const persisted = readPersistedTimerSnapshot(
+      userId,
+      historicalCacheKey(userId, dayKey, 'week'),
+      PERSISTED_CURRENT_WEEK_MAX_AGE_MS,
+    )
+    return persisted ? snapshotForPeriod(persisted, dayKey, period) : null
+  }
+
+  const historicalWeekKey = historicalCacheKey(userId, dayKey, 'week')
+  const historicalWeek = historicalSnapshotCache.get(historicalWeekKey)
+  if (historicalWeek && historicalWeek.expiresAt > Date.now()) {
+    return snapshotForPeriod(historicalWeek.snapshot, dayKey, period)
+  }
+  const persistedWeek = readPersistedTimerSnapshot(
+    userId,
+    historicalWeekKey,
+    PERSISTED_HISTORY_MAX_AGE_MS,
+  )
+  if (persistedWeek) return snapshotForPeriod(persistedWeek, dayKey, period)
+
+  const exactKey = historicalCacheKey(userId, dayKey, period)
+  const exact = historicalSnapshotCache.get(exactKey)
+  if (exact && exact.expiresAt > Date.now()) return exact.snapshot
+  return readPersistedTimerSnapshot(
+    userId,
+    exactKey,
+    PERSISTED_HISTORY_MAX_AGE_MS,
+  )
+}
+
 function snapshotForPeriod(
   snapshot: TimerSnapshot,
   dayKey: string,
@@ -318,6 +443,11 @@ async function loadCurrentWeek(
           expiresAt: Date.now() + CURRENT_WEEK_CACHE_TTL_MS,
           snapshot,
         })
+        persistTimerSnapshot(
+          userId,
+          historicalCacheKey(userId, dayKey, 'week'),
+          snapshot,
+        )
       }
       return snapshot
     })
@@ -344,6 +474,11 @@ export function invalidateTimerSnapshotCache(
   if (includeHistorical) {
     for (const key of historicalSnapshotCache.keys()) {
       if (key.startsWith(`${userId}:`)) historicalSnapshotCache.delete(key)
+    }
+    try {
+      globalThis.localStorage?.removeItem(timerCacheStorageKey(userId))
+    } catch {
+      // A blocked storage backend must not break live synchronization.
     }
   }
 }
@@ -382,6 +517,11 @@ export async function fetchTimerSnapshot(
       historicalCacheKey(userId, dayKey, period),
       snapshot,
     )
+    persistTimerSnapshot(
+      userId,
+      historicalCacheKey(userId, dayKey, period),
+      snapshot,
+    )
   }
   return snapshot
 }
@@ -393,12 +533,19 @@ export async function recordTimerEvent(input: {
   occurredAt: string
 }): Promise<TimerEvent> {
   const client = ensureClient()
-  const { error } = await client.from('timer_events').insert({
-    user_id: input.userId,
-    client_event_id: input.clientEventId,
-    kind: input.kind,
-    occurred_at: input.occurredAt,
-  })
+  const { error } = await withTimerReadTimeout(
+    'разовую метку',
+    (signal) =>
+      client
+        .from('timer_events')
+        .insert({
+          user_id: input.userId,
+          client_event_id: input.clientEventId,
+          kind: input.kind,
+          occurred_at: input.occurredAt,
+        })
+        .abortSignal(signal),
+  )
   if (error?.code !== '23505') throwApiError(error)
   return {
     clientEventId: input.clientEventId,
@@ -414,12 +561,18 @@ export async function applyTimerCommand(input: {
   expectedRevision: number
 }): Promise<TimerCommandResult> {
   const client = ensureClient()
-  const { data, error } = await client.rpc('apply_timer_command', {
-    p_client_command_id: input.clientCommandId,
-    p_action: input.action,
-    p_timer_id: input.timerId,
-    p_expected_revision: input.expectedRevision,
-  })
+  const { data, error } = await withTimerReadTimeout(
+    'команду таймера',
+    (signal) =>
+      client
+        .rpc('apply_timer_command', {
+          p_client_command_id: input.clientCommandId,
+          p_action: input.action,
+          p_timer_id: input.timerId,
+          p_expected_revision: input.expectedRevision,
+        })
+        .abortSignal(signal),
+  )
   throwApiError(error)
   const row = (data?.[0] ?? null) as DbTimerCommandResult | null
   if (!row) throw new TimerApiError('Сервер не вернул состояние таймера')
