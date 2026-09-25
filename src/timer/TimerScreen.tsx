@@ -19,6 +19,7 @@ import { supabase } from '../lib/supabase'
 import {
   applyTimerCommand,
   fetchTimerSnapshot,
+  invalidateTimerSnapshotCache,
   isTimerConflict,
   recordTimerEvent,
   timerErrorText,
@@ -1064,7 +1065,8 @@ export function TimerScreen({
   useEffect(() => {
     if (!supabase) return
     let reloadTimer: number | undefined
-    const scheduleReload = () => {
+    const scheduleReload = (includeHistorical = false) => {
+      invalidateTimerSnapshotCache(userId, includeHistorical)
       if (reloadTimer !== undefined) window.clearTimeout(reloadTimer)
       reloadTimer = window.setTimeout(() => void reload(true), 120)
     }
@@ -1078,7 +1080,7 @@ export function TimerScreen({
           table: 'timer_state',
           filter: `user_id=eq.${userId}`,
         },
-        scheduleReload,
+        () => scheduleReload(),
       )
       .on(
         'postgres_changes',
@@ -1088,7 +1090,7 @@ export function TimerScreen({
           table: 'timer_intervals',
           filter: `user_id=eq.${userId}`,
         },
-        scheduleReload,
+        () => scheduleReload(),
       )
       .on(
         'postgres_changes',
@@ -1098,7 +1100,7 @@ export function TimerScreen({
           table: 'timer_definitions',
           filter: `user_id=eq.${userId}`,
         },
-        scheduleReload,
+        () => scheduleReload(true),
       )
       .on(
         'postgres_changes',
@@ -1108,7 +1110,7 @@ export function TimerScreen({
           table: 'timer_events',
           filter: `user_id=eq.${userId}`,
         },
-        scheduleReload,
+        () => scheduleReload(),
       )
       .subscribe()
 
@@ -1307,6 +1309,7 @@ export function TimerScreen({
             }
           : current,
       )
+      invalidateTimerSnapshotCache(userId)
       setNow(new Date(result.updatedAt ?? result.activeStartedAt ?? 0).getTime())
       if (selectedDate !== todayKey()) setSelectedDate(todayKey())
       else await reload(true)
@@ -1340,6 +1343,7 @@ export function TimerScreen({
 
       const { start, end } = timerRangeBounds(selectedDate, period)
       const occurredAt = new Date(event.occurredAt).getTime()
+      invalidateTimerSnapshotCache(userId)
       if (occurredAt < start.getTime() || occurredAt >= end.getTime()) {
         setSelectedDate(todayKey())
       } else {

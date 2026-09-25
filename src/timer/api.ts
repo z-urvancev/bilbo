@@ -1,5 +1,4 @@
 import { supabase } from '../lib/supabase'
-import { collectAllPages } from '../supabase/pagination'
 import type {
   TimerCommandResult,
   TimerDailyTotal,
@@ -58,6 +57,48 @@ type DbTimerCommandResult = {
   server_updated_at: string
 }
 
+const TIMER_READ_TIMEOUT_MS = 15_000
+const CURRENT_WEEK_CACHE_TTL_MS = 60_000
+const HISTORICAL_CACHE_TTL_MS = 24 * 60 * 60 * 1000
+const MAX_HISTORICAL_CACHE_ENTRIES = 32
+
+type DbTimerSnapshot = {
+  definitions: DbTimerDefinition[]
+  state: DbTimerState | null
+  intervals: DbTimerInterval[]
+  events: DbTimerEvent[]
+  daily_totals: DbDailyTotal[]
+}
+
+type TimerWeekCacheEntry = {
+  expiresAt: number
+  snapshot: TimerSnapshot
+}
+
+const currentWeekCache = new Map<string, TimerWeekCacheEntry>()
+const currentWeekRequests = new Map<string, Promise<TimerSnapshot>>()
+const currentWeekCacheEpoch = new Map<string, number>()
+const historicalSnapshotCache = new Map<string, TimerWeekCacheEntry>()
+
+function cacheHistoricalSnapshot(
+  key: string,
+  snapshot: TimerSnapshot,
+): void {
+  const now = Date.now()
+  for (const [cachedKey, cached] of historicalSnapshotCache) {
+    if (cached.expiresAt <= now) historicalSnapshotCache.delete(cachedKey)
+  }
+  while (historicalSnapshotCache.size >= MAX_HISTORICAL_CACHE_ENTRIES) {
+    const oldestKey = historicalSnapshotCache.keys().next().value
+    if (typeof oldestKey !== 'string') break
+    historicalSnapshotCache.delete(oldestKey)
+  }
+  historicalSnapshotCache.set(key, {
+    expiresAt: now + HISTORICAL_CACHE_TTL_MS,
+    snapshot,
+  })
+}
+
 export class TimerApiError extends Error {
   readonly code?: string
 
@@ -76,6 +117,30 @@ function ensureClient() {
 function throwApiError(error: { message?: string; code?: string } | null) {
   if (!error) return
   throw new TimerApiError(error.message || 'Ошибка Supabase', error.code)
+}
+
+async function withTimerReadTimeout<T>(
+  label: string,
+  read: (signal: AbortSignal) => PromiseLike<T>,
+): Promise<T> {
+  const controller = new AbortController()
+  const timeoutId = globalThis.setTimeout(
+    () => controller.abort(),
+    TIMER_READ_TIMEOUT_MS,
+  )
+  try {
+    return await read(controller.signal)
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new TimerApiError(
+        `Не удалось загрузить ${label}: превышено время ожидания.`,
+        'TIMER_READ_TIMEOUT',
+      )
+    }
+    throw error
+  } finally {
+    globalThis.clearTimeout(timeoutId)
+  }
 }
 
 function localDateKey(value: Date): string {
@@ -145,84 +210,13 @@ function stateFromRow(row: DbTimerState | null): TimerState {
       }
 }
 
-export async function fetchTimerSnapshot(
-  userId: string,
-  dayKey: string,
-  period: TimerPeriod = 'day',
-): Promise<TimerSnapshot> {
-  const client = ensureClient()
-  const { start, end } = timerRangeBounds(dayKey, period)
-
-  const definitionsPromise = client
-    .from('timer_definitions')
-    .select('id,user_id,name,color,icon,sort_order,created_at')
-    .eq('user_id', userId)
-    .is('archived_at', null)
-    .order('sort_order', { ascending: true })
-    .order('created_at', { ascending: true })
-
-  const statePromise = client
-    .from('timer_state')
-    .select('revision,active_timer_id,active_started_at,updated_at')
-    .eq('user_id', userId)
-    .maybeSingle()
-
-  const intervalsPromise = collectAllPages(async (from, to) => {
-    const { data, error } = await client
-      .from('timer_intervals')
-      .select('id,timer_id,started_at,ended_at')
-      .eq('user_id', userId)
-      .lt('started_at', end.toISOString())
-      .gt('ended_at', start.toISOString())
-      .order('started_at', { ascending: false })
-      .range(from, to)
-    throwApiError(error)
-    return (data ?? []) as DbTimerInterval[]
-  })
-
-  const eventsPromise = collectAllPages(async (from, to) => {
-    const { data, error } = await client
-      .from('timer_events')
-      .select('client_event_id,kind,occurred_at')
-      .eq('user_id', userId)
-      .gte('occurred_at', start.toISOString())
-      .lt('occurred_at', end.toISOString())
-      .order('occurred_at', { ascending: false })
-      .range(from, to)
-    throwApiError(error)
-    return (data ?? []) as DbTimerEvent[]
-  })
-
-  const totalsPromise = client
-    .from('timer_daily_totals')
-    .select('timer_id,day,duration_ms,source')
-    .eq('user_id', userId)
-    .gte('day', localDateKey(start))
-    .lt('day', localDateKey(end))
-    .order('day', { ascending: false })
-    .order('timer_id', { ascending: true })
-
-  const [definitionsResult, stateResult, intervalRows, eventRows, totalsResult] =
-    await Promise.all([
-      definitionsPromise,
-      statePromise,
-      intervalsPromise,
-      eventsPromise,
-      totalsPromise,
-    ])
-
-  throwApiError(definitionsResult.error)
-  throwApiError(stateResult.error)
-  throwApiError(totalsResult.error)
-
+function snapshotFromRow(payload: DbTimerSnapshot): TimerSnapshot {
   return {
-    timers: ((definitionsResult.data ?? []) as DbTimerDefinition[]).map(
-      definitionFromRow,
-    ),
-    state: stateFromRow((stateResult.data ?? null) as DbTimerState | null),
-    intervals: intervalRows.map(intervalFromRow),
-    events: eventRows.map(eventFromRow),
-    importedTotals: ((totalsResult.data ?? []) as DbDailyTotal[]).map(
+    timers: (payload.definitions ?? []).map(definitionFromRow),
+    state: stateFromRow(payload.state ?? null),
+    intervals: (payload.intervals ?? []).map(intervalFromRow),
+    events: (payload.events ?? []).map(eventFromRow),
+    importedTotals: (payload.daily_totals ?? []).map(
       (row): TimerDailyTotal => ({
         timerId: row.timer_id,
         day: row.day,
@@ -231,6 +225,171 @@ export async function fetchTimerSnapshot(
       }),
     ),
   }
+}
+
+function timerWeekCacheKey(userId: string, dayKey: string): string {
+  return `${userId}:${localDateKey(timerRangeBounds(dayKey, 'week').start)}`
+}
+
+function historicalCacheKey(
+  userId: string,
+  dayKey: string,
+  period: TimerPeriod,
+): string {
+  const rangeStart = localDateKey(timerRangeBounds(dayKey, period).start)
+  return `${userId}:${period}:${rangeStart}`
+}
+
+function isCurrentTimerWeek(dayKey: string): boolean {
+  return (
+    localDateKey(timerRangeBounds(dayKey, 'week').start) ===
+    localDateKey(timerRangeBounds(localDateKey(new Date()), 'week').start)
+  )
+}
+
+function snapshotForPeriod(
+  snapshot: TimerSnapshot,
+  dayKey: string,
+  period: TimerPeriod,
+): TimerSnapshot {
+  if (period === 'week') return snapshot
+  const { start, end } = timerRangeBounds(dayKey, 'day')
+  const startMs = start.getTime()
+  const endMs = end.getTime()
+  const startDay = localDateKey(start)
+  const endDay = localDateKey(end)
+  return {
+    ...snapshot,
+    intervals: snapshot.intervals.filter(
+      (interval) =>
+        new Date(interval.startedAt).getTime() < endMs &&
+        new Date(interval.endedAt).getTime() > startMs,
+    ),
+    events: snapshot.events.filter((event) => {
+      const occurredAt = new Date(event.occurredAt).getTime()
+      return occurredAt >= startMs && occurredAt < endMs
+    }),
+    importedTotals: snapshot.importedTotals.filter(
+      (total) => total.day >= startDay && total.day < endDay,
+    ),
+  }
+}
+
+async function fetchTimerRangeSnapshot(
+  dayKey: string,
+  period: TimerPeriod,
+): Promise<TimerSnapshot> {
+  const client = ensureClient()
+  const { start, end } = timerRangeBounds(dayKey, period)
+  const { data, error } = await withTimerReadTimeout(
+    period === 'day' ? 'данные за день' : 'данные за неделю',
+    (signal) =>
+      client
+        .rpc('get_timer_snapshot', {
+          p_start: start.toISOString(),
+          p_end: end.toISOString(),
+          p_start_day: localDateKey(start),
+          p_end_day: localDateKey(end),
+        })
+        .abortSignal(signal),
+  )
+  throwApiError(error)
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new TimerApiError('Сервер не вернул снимок таймеров')
+  }
+  return snapshotFromRow(data as unknown as DbTimerSnapshot)
+}
+
+async function loadCurrentWeek(
+  userId: string,
+  dayKey: string,
+): Promise<TimerSnapshot> {
+  const key = timerWeekCacheKey(userId, dayKey)
+  const cached = currentWeekCache.get(key)
+  if (cached && cached.expiresAt > Date.now()) return cached.snapshot
+  const pending = currentWeekRequests.get(key)
+  if (pending) return pending
+
+  const epoch = currentWeekCacheEpoch.get(userId) ?? 0
+  const request = fetchTimerRangeSnapshot(dayKey, 'week')
+    .then((snapshot) => {
+      if ((currentWeekCacheEpoch.get(userId) ?? 0) === epoch) {
+        currentWeekCache.set(key, {
+          expiresAt: Date.now() + CURRENT_WEEK_CACHE_TTL_MS,
+          snapshot,
+        })
+      }
+      return snapshot
+    })
+    .finally(() => currentWeekRequests.delete(key))
+  currentWeekRequests.set(key, request)
+  return request
+}
+
+export function invalidateTimerSnapshotCache(
+  userId: string,
+  includeHistorical = false,
+): void {
+  currentWeekCacheEpoch.set(userId, (currentWeekCacheEpoch.get(userId) ?? 0) + 1)
+  for (const key of currentWeekCache.keys()) {
+    if (key.startsWith(`${userId}:`)) currentWeekCache.delete(key)
+  }
+  for (const key of currentWeekRequests.keys()) {
+    if (key.startsWith(`${userId}:`)) currentWeekRequests.delete(key)
+  }
+  if (includeHistorical) {
+    for (const key of historicalSnapshotCache.keys()) {
+      if (key.startsWith(`${userId}:`)) historicalSnapshotCache.delete(key)
+    }
+  }
+}
+
+export async function fetchTimerSnapshot(
+  userId: string,
+  dayKey: string,
+  period: TimerPeriod = 'day',
+): Promise<TimerSnapshot> {
+  if (isCurrentTimerWeek(dayKey)) {
+    const key = timerWeekCacheKey(userId, dayKey)
+    const cached = currentWeekCache.get(key)
+    if (cached && cached.expiresAt > Date.now()) {
+      return snapshotForPeriod(cached.snapshot, dayKey, period)
+    }
+    if (period === 'week') return loadCurrentWeek(userId, dayKey)
+  } else {
+    const historicalWeek = historicalSnapshotCache.get(
+      historicalCacheKey(userId, dayKey, 'week'),
+    )
+    if (historicalWeek && historicalWeek.expiresAt > Date.now()) {
+      return snapshotForPeriod(historicalWeek.snapshot, dayKey, period)
+    }
+    const historicalExact = historicalSnapshotCache.get(
+      historicalCacheKey(userId, dayKey, period),
+    )
+    if (historicalExact && historicalExact.expiresAt > Date.now()) {
+      return historicalExact.snapshot
+    }
+  }
+
+  const snapshot = await fetchTimerRangeSnapshot(dayKey, period)
+  if (period === 'week' && isCurrentTimerWeek(dayKey)) {
+    currentWeekCache.set(timerWeekCacheKey(userId, dayKey), {
+      expiresAt: Date.now() + CURRENT_WEEK_CACHE_TTL_MS,
+      snapshot,
+    })
+  } else if (period === 'day' && isCurrentTimerWeek(dayKey)) {
+    // The day view stays minimal. Warm the current week only after it is drawn.
+    globalThis.setTimeout(
+      () => void loadCurrentWeek(userId, dayKey).catch(() => undefined),
+      0,
+    )
+  } else if (!isCurrentTimerWeek(dayKey)) {
+    cacheHistoricalSnapshot(
+      historicalCacheKey(userId, dayKey, period),
+      snapshot,
+    )
+  }
+  return snapshot
 }
 
 export async function recordTimerEvent(input: {
