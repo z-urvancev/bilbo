@@ -186,6 +186,18 @@ type CalendarTarget =
   | { kind: 'mobileWeek' }
   | { kind: 'clock'; habitId: string; mode: 'postpone' | 'deadline' }
 
+const SCREEN_HASH: Record<Screen, string> = {
+  tracker: '#/tracker',
+  habits: '#/habits',
+  timers: '#/timers',
+}
+
+function screenFromHash(hash = window.location.hash): Screen {
+  const section = hash.replace(/^#\/?/, '').split('/')[0]
+  if (section === 'habits' || section === 'timers') return section
+  return 'tracker'
+}
+
 function WeekDot({
   habit,
   raw,
@@ -515,7 +527,7 @@ export default function App() {
   const [completions, setCompletions] = useState<Completions>(
     initialPersisted.completions,
   )
-  const [screen, setScreen] = useState<Screen>('tracker')
+  const [screen, setScreen] = useState<Screen>(() => screenFromHash())
   const [dynMode, setDynMode] = useState<DynMode>('week')
   const now = new Date()
   const [y, setY] = useState(now.getFullYear())
@@ -570,6 +582,38 @@ export default function App() {
   const [calendarTarget, setCalendarTarget] = useState<CalendarTarget | null>(null)
   const [calendarY, setCalendarY] = useState(now.getFullYear())
   const [calendarM0, setCalendarM0] = useState(now.getMonth())
+
+  useEffect(() => {
+    const syncScreenFromUrl = () => {
+      const nextScreen = screenFromHash()
+      setScreen(nextScreen)
+      const canonicalHash = SCREEN_HASH[nextScreen]
+      if (window.location.hash !== canonicalHash) {
+        window.history.replaceState(
+          window.history.state,
+          '',
+          `${window.location.pathname}${window.location.search}${canonicalHash}`,
+        )
+      }
+    }
+    syncScreenFromUrl()
+    window.addEventListener('hashchange', syncScreenFromUrl)
+    window.addEventListener('popstate', syncScreenFromUrl)
+    return () => {
+      window.removeEventListener('hashchange', syncScreenFromUrl)
+      window.removeEventListener('popstate', syncScreenFromUrl)
+    }
+  }, [])
+
+  useEffect(() => {
+    const nextHash = SCREEN_HASH[screen]
+    if (window.location.hash === nextHash) return
+    window.history.pushState(
+      window.history.state,
+      '',
+      `${window.location.pathname}${window.location.search}${nextHash}`,
+    )
+  }, [screen])
 
   const getPendingQueue = useCallback((userId: string): PendingQueue => {
     const existing = pendingQueuesRef.current.get(userId)
@@ -923,6 +967,7 @@ export default function App() {
       }
       return
     }
+    if (screen === 'timers') return
     const uid = sessionUserId
     const queue = getPendingQueue(uid)
     let cancelled = false
@@ -962,7 +1007,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [sessionUserId, getPendingQueue])
+  }, [sessionUserId, screen, getPendingQueue])
 
   useEffect(() => {
     const onVis = () => {
