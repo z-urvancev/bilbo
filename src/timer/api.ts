@@ -355,7 +355,8 @@ export async function fetchTimerSnapshot(
     if (cached && cached.expiresAt > Date.now()) {
       return snapshotForPeriod(cached.snapshot, dayKey, period)
     }
-    if (period === 'week') return loadCurrentWeek(userId, dayKey)
+    const currentWeek = await loadCurrentWeek(userId, dayKey)
+    return snapshotForPeriod(currentWeek, dayKey, period)
   } else {
     const historicalWeek = historicalSnapshotCache.get(
       historicalCacheKey(userId, dayKey, 'week'),
@@ -372,18 +373,7 @@ export async function fetchTimerSnapshot(
   }
 
   const snapshot = await fetchTimerRangeSnapshot(dayKey, period)
-  if (period === 'week' && isCurrentTimerWeek(dayKey)) {
-    currentWeekCache.set(timerWeekCacheKey(userId, dayKey), {
-      expiresAt: Date.now() + CURRENT_WEEK_CACHE_TTL_MS,
-      snapshot,
-    })
-  } else if (period === 'day' && isCurrentTimerWeek(dayKey)) {
-    // The day view stays minimal. Warm the current week only after it is drawn.
-    globalThis.setTimeout(
-      () => void loadCurrentWeek(userId, dayKey).catch(() => undefined),
-      0,
-    )
-  } else if (!isCurrentTimerWeek(dayKey)) {
+  if (!isCurrentTimerWeek(dayKey)) {
     cacheHistoricalSnapshot(
       historicalCacheKey(userId, dayKey, period),
       snapshot,
