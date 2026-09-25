@@ -321,7 +321,11 @@ async function loadCurrentWeek(
       }
       return snapshot
     })
-    .finally(() => currentWeekRequests.delete(key))
+    .finally(() => {
+      if (currentWeekRequests.get(key) === request) {
+        currentWeekRequests.delete(key)
+      }
+    })
   currentWeekRequests.set(key, request)
   return request
 }
