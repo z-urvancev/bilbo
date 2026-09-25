@@ -415,7 +415,7 @@ async function fetchTimerRangeSnapshot(
           p_end: end.toISOString(),
           p_start_day: localDateKey(start),
           p_end_day: localDateKey(end),
-        })
+        }, { get: true })
         .abortSignal(signal),
   )
   throwApiError(error)
