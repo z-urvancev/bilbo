@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "test": "node --experimental-strip-types --test tests/sync-hardening.test.mjs tests/timer-optimistic.test.mjs && node --experimental-strip-types tests/transactional-sync.integration.test.mjs",
+    "test": "node --experimental-strip-types --test tests/sync-hardening.test.mjs tests/timer-optimistic.test.mjs tests/timer-scale.test.mjs && node --experimental-strip-types tests/transactional-sync.integration.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

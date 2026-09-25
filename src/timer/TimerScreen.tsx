@@ -27,6 +27,7 @@ import {
   timerRangeBounds,
 } from './api'
 import { reconcileOptimisticIntervals } from './optimisticIntervals'
+import { calculateTimelineScale, timelineTicks } from './timelineScale'
 import type {
   TimerDefinition,
   TimerEvent,
@@ -273,13 +274,22 @@ function MobileHorizontalTimeline({
   segments,
   events,
   timers,
+  startHour,
+  endHour,
 }: {
   segments: DaySegment[]
   events: DayPointEvent[]
   timers: TimerDefinition[]
+  startHour: number
+  endHour: number
 }) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const holdTimerRef = useRef<number | undefined>(undefined)
+  const scaleStartMinute = startHour * 60
+  const scaleMinutes = (endHour - startHour) * 60
+  const ticks = timelineTicks({ startHour, endHour })
+  const minutePosition = (minute: number) =>
+    ((minute - scaleStartMinute) / scaleMinutes) * 100
   const selectedSegment =
     segments.find(
       (segment) => `interval:${segmentKey(segment)}` === selectedKey,
@@ -292,9 +302,9 @@ function MobileHorizontalTimeline({
     ? timerFor(timers, selectedSegment.interval.timerId)
     : undefined
   const selectedLeft = selectedSegment
-    ? Math.min(92, Math.max(8, (selectedSegment.startMinute / 1440) * 100))
+    ? Math.min(92, Math.max(8, minutePosition(selectedSegment.startMinute)))
     : selectedPoint
-      ? Math.min(92, Math.max(8, (selectedPoint.minute / 1440) * 100))
+      ? Math.min(92, Math.max(8, minutePosition(selectedPoint.minute)))
       : 50
   const selectedPopoverStyle: CSSProperties =
     selectedLeft < 30
@@ -341,30 +351,29 @@ function MobileHorizontalTimeline({
           style={selectedPopoverStyle}
         />
       )}
-      <div className="mb-2 grid grid-cols-5 text-[0.55rem] font-semibold text-[#929d97]">
-        {['00:00', '06:00', '12:00', '18:00', '24:00'].map(
-          (label, index) => (
-            <span
-              key={label}
-              className={
-                index === 4
-                  ? 'text-right'
-                  : index > 0
-                    ? 'text-center'
-                    : ''
-              }
-            >
-              {label}
-            </span>
-          ),
-        )}
+      <div className="relative mb-2 h-3 text-[0.55rem] font-semibold text-[#929d97]">
+        {ticks.map((hour, index) => (
+          <span
+            key={hour}
+            className={`absolute whitespace-nowrap ${
+              index === 0
+                ? ''
+                : index === ticks.length - 1
+                  ? '-translate-x-full'
+                  : '-translate-x-1/2'
+            }`}
+            style={{ left: `${minutePosition(hour * 60)}%` }}
+          >
+            {String(hour).padStart(2, '0')}:00
+          </span>
+        ))}
       </div>
       <div className="relative h-12 overflow-hidden rounded-2xl border border-[#e1e7e3] bg-[#f5f7f4]">
-        {[25, 50, 75].map((left) => (
+        {ticks.slice(1, -1).map((hour) => (
           <span
-            key={left}
+            key={hour}
             className="absolute inset-y-0 border-l border-[#e1e6e3]"
-            style={{ left: `${left}%` }}
+            style={{ left: `${minutePosition(hour * 60)}%` }}
           />
         ))}
         {segments.map((segment) => {
@@ -372,8 +381,9 @@ function MobileHorizontalTimeline({
           if (!timer) return null
           const key = `interval:${segmentKey(segment)}`
           const duration = segment.end - segment.start
-          const left = (segment.startMinute / 1440) * 100
-          const width = (visualSegmentMinutes(segment) / 1440) * 100
+          const left = minutePosition(segment.startMinute)
+          const width =
+            (visualSegmentMinutes(segment) / scaleMinutes) * 100
           const selected = selectedKey === key
           return (
             <div key={key}>
@@ -417,7 +427,7 @@ function MobileHorizontalTimeline({
         {events.map((point) => {
           const meta = TIMER_EVENT_META[point.event.kind]
           const key = `event:${point.event.clientEventId}`
-          const left = (point.minute / 1440) * 100
+          const left = minutePosition(point.minute)
           const selected = selectedKey === key
           return (
             <div key={key}>
@@ -533,11 +543,20 @@ function DesktopHorizontalTimelines({
   days,
   timers,
   period,
+  startHour,
+  endHour,
 }: {
   days: DayView[]
   timers: TimerDefinition[]
   period: TimerPeriod
+  startHour: number
+  endHour: number
 }) {
+  const scaleStartMinute = startHour * 60
+  const scaleMinutes = (endHour - startHour) * 60
+  const ticks = timelineTicks({ startHour, endHour })
+  const minutePosition = (minute: number) =>
+    ((minute - scaleStartMinute) / scaleMinutes) * 100
   const hasTimelineItems = days.some(
     (day) => day.segments.length > 0 || day.events.length > 0,
   )
@@ -559,23 +578,22 @@ function DesktopHorizontalTimelines({
     <div className="space-y-3 pt-3">
       <div className="grid grid-cols-[7.5rem_minmax(0,1fr)_4rem] items-end gap-3 text-[0.58rem] font-semibold text-[#929d97]">
         <span />
-        <div className="grid grid-cols-5">
-          {['00:00', '06:00', '12:00', '18:00', '24:00'].map(
-            (label, index) => (
-              <span
-                key={label}
-                className={
-                  index === 4
-                    ? 'text-right'
-                    : index > 0
-                      ? 'text-center'
-                      : ''
-                }
-              >
-                {label}
-              </span>
-            ),
-          )}
+        <div className="relative h-3">
+          {ticks.map((hour, index) => (
+            <span
+              key={hour}
+              className={`absolute whitespace-nowrap ${
+                index === 0
+                  ? ''
+                  : index === ticks.length - 1
+                    ? '-translate-x-full'
+                    : '-translate-x-1/2'
+              }`}
+              style={{ left: `${minutePosition(hour * 60)}%` }}
+            >
+              {String(hour).padStart(2, '0')}:00
+            </span>
+          ))}
         </div>
         <span className="text-right">Итого</span>
       </div>
@@ -601,18 +619,19 @@ function DesktopHorizontalTimelines({
               </span>
             </div>
             <div className="relative h-9 overflow-hidden rounded-xl border border-[#e1e7e3] bg-[#f5f7f4]">
-              {[25, 50, 75].map((left) => (
+              {ticks.slice(1, -1).map((hour) => (
                 <span
-                  key={left}
+                  key={hour}
                   className="absolute inset-y-0 border-l border-[#e1e6e3]"
-                  style={{ left: `${left}%` }}
+                  style={{ left: `${minutePosition(hour * 60)}%` }}
                 />
               ))}
               {dayView.segments.map((segment) => {
                 const timer = timerFor(timers, segment.interval.timerId)
                 if (!timer) return null
-                const left = (segment.startMinute / 1440) * 100
-                const width = (visualSegmentMinutes(segment) / 1440) * 100
+                const left = minutePosition(segment.startMinute)
+                const width =
+                  (visualSegmentMinutes(segment) / scaleMinutes) * 100
                 return (
                   <span
                     key={segmentKey(segment)}
@@ -631,7 +650,7 @@ function DesktopHorizontalTimelines({
               })}
               {dayView.events.map((point) => {
                 const meta = TIMER_EVENT_META[point.event.kind]
-                const left = (point.minute / 1440) * 100
+                const left = minutePosition(point.minute)
                 return (
                   <span
                     key={point.event.clientEventId}
@@ -1083,6 +1102,10 @@ export function TimerScreen({
       ) ?? null,
     [snapshot],
   )
+  const activeElapsed =
+    activeTimer && snapshot?.state.activeStartedAt
+      ? Math.max(0, now - new Date(snapshot.state.activeStartedAt).getTime())
+      : 0
 
   const totals = useMemo(() => {
     const result: Record<string, number> = {}
@@ -1203,29 +1226,10 @@ export function TimerScreen({
     [periodDays, snapshot?.events, snapshot?.importedTotals, timeline],
   )
 
-  const weekScale = useMemo(() => {
+  const timelineScale = useMemo(() => {
     const segments = dayViews.flatMap((day) => day.segments)
     const events = dayViews.flatMap((day) => day.events)
-    if (segments.length === 0 && events.length === 0) {
-      return { startHour: 8, endHour: 20 }
-    }
-    const earliest = Math.min(
-      ...segments.map((segment) => segment.startMinute),
-      ...events.map((event) => event.minute),
-    )
-    const latest = Math.max(
-      ...segments.map((segment) => segment.endMinute),
-      ...events.map((event) => event.minute),
-    )
-    let startHour = Math.max(0, Math.floor(earliest / 60))
-    let endHour = Math.min(24, Math.ceil(latest / 60))
-    if (endHour - startHour < 6) {
-      const missing = 6 - (endHour - startHour)
-      startHour = Math.max(0, startHour - Math.ceil(missing / 2))
-      endHour = Math.min(24, startHour + 6)
-      startHour = Math.max(0, endHour - 6)
-    }
-    return { startHour, endHour }
+    return calculateTimelineScale(segments, events)
   }, [dayViews])
 
   const eventCounts = useMemo(
@@ -1516,11 +1520,18 @@ export function TimerScreen({
             </div>
           </div>
           <div
-            className={`inline-flex max-w-[55%] items-center gap-2 rounded-full px-3 py-2 text-[0.68rem] font-bold ${
+            className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-[0.68rem] font-bold ${
+              isMobile ? 'max-w-[68%]' : 'max-w-[55%]'
+            } ${
               activeTimer
                 ? 'bg-[#dff3e8] text-[#176646]'
                 : 'bg-[#edf1ee] text-[#6f7d77]'
             }`}
+            aria-label={
+              activeTimer
+                ? `${activeTimer.name}, ${formatDuration(activeElapsed)}`
+                : 'Ничего не запущено'
+            }
           >
             <span
               className={`h-2 w-2 shrink-0 rounded-full ${
@@ -1530,6 +1541,11 @@ export function TimerScreen({
             <span className="truncate">
               {activeTimer ? activeTimer.name : 'Ничего не запущено'}
             </span>
+            {activeTimer && (
+              <span className="shrink-0 border-l border-[#176646]/20 pl-2 font-extrabold tabular-nums">
+                {formatDuration(activeElapsed)}
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -1667,6 +1683,8 @@ export function TimerScreen({
               days={dayViews}
               timers={timers}
               period={period}
+              startHour={timelineScale.startHour}
+              endHour={timelineScale.endHour}
             />
           ) : period === 'day' ? (
             <div className="pt-4">
@@ -1674,6 +1692,8 @@ export function TimerScreen({
                 segments={dayViews[0]?.segments ?? []}
                 events={dayViews[0]?.events ?? []}
                 timers={timers}
+                startHour={timelineScale.startHour}
+                endHour={timelineScale.endHour}
               />
             </div>
           ) : (
@@ -1681,8 +1701,8 @@ export function TimerScreen({
               <MobileWeekTimeline
                 days={dayViews}
                 timers={timers}
-                startHour={weekScale.startHour}
-                endHour={weekScale.endHour}
+                startHour={timelineScale.startHour}
+                endHour={timelineScale.endHour}
               />
             </div>
           )}
