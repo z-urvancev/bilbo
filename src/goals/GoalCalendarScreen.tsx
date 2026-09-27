@@ -132,6 +132,12 @@ const STATUS_CLASSES: Record<GoalStatus, string> = {
   paused: 'bg-amber-50 text-amber-700',
 }
 
+const VIEW_OPTIONS = [
+  ['category', LayoutList, 'Категории'],
+  ['months', CalendarDays, 'Месяцы'],
+  ['stats', BarChart3, 'Статистика'],
+] as const
+
 function formatDeadline(dayKey: string): string {
   const [year, month, day] = dayKey.split('-').map(Number)
   return new Intl.DateTimeFormat('ru-RU', {
@@ -576,10 +582,6 @@ export default function GoalCalendarScreen({
             <h2 className="mt-1 text-3xl font-bold tracking-[-0.045em] text-slate-950 sm:text-4xl">
               Цели {year}
             </h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
-              Годовые направления, конкретные задачи по месяцам и честная
-              статистика выполнения.
-            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <div className="inline-flex items-center rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
@@ -614,14 +616,8 @@ export default function GoalCalendarScreen({
           </div>
         </div>
 
-        <div className="mt-5 grid grid-cols-3 gap-2 sm:max-w-xl">
-          {(
-            [
-              ['category', LayoutList, 'Категории'],
-              ['months', CalendarDays, 'Месяцы'],
-              ['stats', BarChart3, 'Статистика'],
-            ] as const
-          ).map(([value, Icon, label]) => (
+        <div className="mt-5 hidden grid-cols-3 gap-2 sm:grid sm:max-w-xl">
+          {VIEW_OPTIONS.map(([value, Icon, label]) => (
             <button
               key={value}
               type="button"
@@ -1162,6 +1158,30 @@ export default function GoalCalendarScreen({
             </button>
           </div>
         </div>
+      )}
+
+      {isMobile && (
+        <nav
+          className="fixed inset-x-3 bottom-[calc(0.75rem+env(safe-area-inset-bottom,0px))] z-[140] mx-auto grid max-w-md grid-cols-3 gap-1 rounded-[1.4rem] bg-slate-950 p-1.5 shadow-[0_18px_45px_rgba(15,23,42,0.28)]"
+          aria-label="Разделы календаря целей"
+        >
+          {VIEW_OPTIONS.map(([value, Icon, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setView(value)}
+              className={`flex min-w-0 flex-col items-center justify-center gap-1 rounded-[1rem] px-1 py-2 text-[11px] font-bold transition ${
+                view === value
+                  ? 'bg-violet-600 text-white shadow-md shadow-violet-950/30'
+                  : 'text-slate-300 active:bg-white/10'
+              }`}
+              aria-current={view === value ? 'page' : undefined}
+            >
+              <Icon className="h-5 w-5" />
+              <span className="w-full truncate text-center">{label}</span>
+            </button>
+          ))}
+        </nav>
       )}
     </div>
   )

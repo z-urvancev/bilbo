@@ -1971,7 +1971,7 @@ export default function App() {
       </main>
       ) : screen === 'home' ? (
       <main
-        className={`mx-auto flex w-full max-w-6xl flex-1 items-center px-4 py-8 sm:px-6 sm:py-12 ${
+        className={`mx-auto flex w-full max-w-6xl flex-1 items-start px-4 py-8 sm:items-center sm:px-6 sm:py-12 ${
           isMobile
             ? 'min-h-0 overflow-y-auto overscroll-y-contain [-webkit-overflow-scrolling:touch]'
             : 'min-h-[calc(100svh-5rem)]'
@@ -2058,7 +2058,7 @@ export default function App() {
       <main
         className={`mx-auto w-full max-w-7xl px-3 py-5 sm:px-4 sm:py-8 ${
           isMobile
-            ? 'min-h-0 flex-1 overflow-y-auto overscroll-y-contain pb-6 [-webkit-overflow-scrolling:touch]'
+            ? 'min-h-0 flex-1 overflow-y-auto overscroll-y-contain pb-28 [-webkit-overflow-scrolling:touch]'
             : ''
         }`}
       >
