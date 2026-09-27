@@ -15,6 +15,7 @@ import {
   EyeOff,
   Flame,
   HelpCircle,
+  House,
   LayoutGrid,
   List,
   MoreVertical,
@@ -171,7 +172,7 @@ function friendlyAuthError(e: unknown): string {
   return `Не удалось выполнить действие: ${msg}`
 }
 
-type Screen = 'tracker' | 'habits' | 'timers'
+type Screen = 'home' | 'tracker' | 'habits' | 'timers'
 type DynMode = 'day' | 'week' | 'month' | 'year'
 type MobileTrackerTab = 'marks' | 'analytics'
 type MobileMarksView = 'week' | 'month'
@@ -187,6 +188,7 @@ type CalendarTarget =
   | { kind: 'clock'; habitId: string; mode: 'postpone' | 'deadline' }
 
 const SCREEN_HASH: Record<Screen, string> = {
+  home: '#/home',
   tracker: '#/tracker',
   habits: '#/habits',
   timers: '#/timers',
@@ -194,8 +196,13 @@ const SCREEN_HASH: Record<Screen, string> = {
 
 function screenFromHash(hash = window.location.hash): Screen {
   const section = hash.replace(/^#\/?/, '').split('/')[0]
-  if (section === 'habits' || section === 'timers') return section
-  return 'tracker'
+  if (
+    section === 'tracker' ||
+    section === 'habits' ||
+    section === 'timers'
+  )
+    return section
+  return 'home'
 }
 
 function WeekDot({
@@ -967,7 +974,7 @@ export default function App() {
       }
       return
     }
-    if (screen === 'timers') return
+    if (screen !== 'tracker' && screen !== 'habits') return
     const uid = sessionUserId
     const queue = getPendingQueue(uid)
     let cancelled = false
@@ -1011,7 +1018,10 @@ export default function App() {
 
   useEffect(() => {
     const onVis = () => {
-      if (document.visibilityState === 'visible' && screen !== 'timers') {
+      if (
+        document.visibilityState === 'visible' &&
+        (screen === 'tracker' || screen === 'habits')
+      ) {
         void pullIncremental()
       }
       if (document.visibilityState === 'hidden') void flushPendingInternal()
@@ -1031,7 +1041,7 @@ export default function App() {
     if (
       !sessionUserId ||
       supabaseSyncPhase !== 'ready' ||
-      screen === 'timers'
+      (screen !== 'tracker' && screen !== 'habits')
     )
       return
     void pullIncremental()
@@ -1059,7 +1069,7 @@ export default function App() {
       !sessionUserId ||
       supabaseSyncPhase !== 'ready' ||
       !supabaseConfigured ||
-      screen === 'timers'
+      (screen !== 'tracker' && screen !== 'habits')
     )
       return
     const uid = sessionUserId
@@ -1655,55 +1665,73 @@ export default function App() {
       >
         <div className="mx-auto max-w-7xl">
           {isMobile ? (
-            screen === 'tracker' ? (
-              <div className="flex items-center gap-2">
+            screen === 'home' ? (
+              <div className="relative flex min-h-10 items-center justify-center gap-2">
+                <span className="grid h-8 w-8 place-items-center rounded-xl bg-teal-100 text-teal-700">
+                  <House className="h-4.5 w-4.5" strokeWidth={2.2} />
+                </span>
+                <h1 className="text-center text-lg font-bold tracking-[-0.025em] text-[#25312c]">
+                  Bilbo
+                </h1>
                 <button
                   type="button"
                   onClick={() => {
-                    if (mobileMarksView === 'month') setMonthDelta(-1)
-                    else moveMobileWeek(-1)
+                    if (!session?.user) setAuthModalOpen(true)
+                    else setAuthMenuOpen((value) => !value)
                   }}
-                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-neutral-800 shadow-sm ring-1 ring-black/5"
-                  aria-label={mobileMarksView === 'month' ? 'Предыдущий месяц' : 'Предыдущая неделя'}
+                  className="absolute right-0 grid h-9 w-9 place-items-center rounded-full bg-white text-[#33413b] shadow-sm ring-1 ring-black/5 active:bg-neutral-50"
+                  aria-label="Профиль"
+                >
+                  <User className="h-4.5 w-4.5" />
+                </button>
+              </div>
+            ) : screen === 'tracker' ? (
+              <div className="relative flex min-h-10 items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setScreen('home')
+                    setMobileTrackerTab('marks')
+                  }}
+                  className="absolute left-0 grid h-9 w-9 place-items-center rounded-full bg-white text-[#33413b] shadow-sm ring-1 ring-black/5 active:bg-neutral-50"
+                  aria-label="Назад в главное меню"
                 >
                   <ChevronLeft className="h-5 w-5" />
                 </button>
-                <div className="relative min-w-0 flex-1">
-                  <button
-                    type="button"
-                    onClick={() => openCalendar({ kind: 'mobileWeek' }, selectedDateKey)}
-                    className="flex min-h-[2.75rem] w-full touch-manipulation items-center justify-center rounded-2xl bg-white px-3 py-2.5 text-center text-base font-semibold leading-tight text-neutral-900 shadow-sm ring-1 ring-black/5 active:bg-neutral-50"
-                    aria-label={mobileMarksView === 'month' ? 'Выбрать дату месяца' : 'Выбрать дату недели'}
-                  >
-                    {mobileMarksView === 'month' ? mobileMonthLabel : mobileWeekRangeLabel}
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (mobileMarksView === 'month') setMonthDelta(1)
-                    else moveMobileWeek(1)
-                  }}
-                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-neutral-800 shadow-sm ring-1 ring-black/5"
-                  aria-label={mobileMarksView === 'month' ? 'Следующий месяц' : 'Следующая неделя'}
-                >
-                  <ChevronRight className="h-5 w-5" />
-                </button>
+                <span className="grid h-8 w-8 place-items-center rounded-xl bg-teal-100 text-teal-700">
+                  <LayoutGrid className="h-4.5 w-4.5" strokeWidth={2.2} />
+                </span>
+                <h1 className="text-center text-lg font-bold tracking-[-0.025em] text-[#25312c]">
+                  Трекер привычек
+                </h1>
               </div>
             ) : screen === 'habits' ? (
-              <h1 className="text-center text-lg font-semibold tracking-tight text-neutral-900">
-                Привычки
-              </h1>
+              <div className="relative flex min-h-10 items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setScreen('tracker')}
+                  className="absolute left-0 grid h-9 w-9 place-items-center rounded-full bg-white text-[#33413b] shadow-sm ring-1 ring-black/5 active:bg-neutral-50"
+                  aria-label="Назад к трекеру привычек"
+                >
+                  <ChevronLeft className="h-5 w-5" />
+                </button>
+                <span className="grid h-8 w-8 place-items-center rounded-xl bg-teal-100 text-teal-700">
+                  <List className="h-4.5 w-4.5" strokeWidth={2.2} />
+                </span>
+                <h1 className="text-center text-lg font-bold tracking-[-0.025em] text-[#25312c]">
+                  Привычки
+                </h1>
+              </div>
             ) : (
               <div className="relative flex min-h-10 items-center justify-center gap-2">
                 <button
                   type="button"
                   onClick={() => {
-                    setScreen('tracker')
+                    setScreen('home')
                     setMobileTrackerTab('marks')
                   }}
                   className="absolute left-0 grid h-9 w-9 place-items-center rounded-full bg-white text-[#33413b] shadow-sm ring-1 ring-black/5 active:bg-neutral-50"
-                  aria-label="Назад к трекеру привычек"
+                  aria-label="Назад в главное меню"
                 >
                   <ChevronLeft className="h-5 w-5" />
                 </button>
@@ -1725,6 +1753,19 @@ export default function App() {
                   <nav className={`flex shrink-0 rounded-lg p-0.5 text-sm ${
                     screen === 'timers' ? 'bg-blue-800/60' : 'bg-teal-800/60'
                   }`}>
+                    <button
+                      type="button"
+                      onClick={() => setScreen('home')}
+                      className={`rounded-md px-3 py-1.5 font-medium transition ${
+                        screen === 'home'
+                          ? 'bg-white text-teal-800 shadow'
+                          : screen === 'timers'
+                            ? 'text-blue-100 hover:bg-blue-800/80'
+                            : 'text-teal-100 hover:bg-teal-800/80'
+                      }`}
+                    >
+                      Главная
+                    </button>
                     <button
                       type="button"
                       onClick={() => setScreen('tracker')}
@@ -1803,13 +1844,13 @@ export default function App() {
           )}
         </div>
       </header>
-      {syncErr && screen !== 'timers' && (
+      {syncErr && (screen === 'tracker' || screen === 'habits') && (
         <div className="mx-auto mt-3 max-w-7xl rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
           {syncErr}
         </div>
       )}
 
-      {!session?.user ? (
+      {!session?.user && screen !== 'home' ? (
       <main
         className={`mx-auto max-w-3xl px-3 py-10 ${
           isMobile
@@ -1820,7 +1861,7 @@ export default function App() {
         <div className="rounded-2xl border border-teal-200 bg-white p-6 text-center shadow-sm">
           <h2 className="text-lg font-semibold text-teal-900">Нужна авторизация</h2>
           <p className="mt-2 text-sm text-teal-800/80">
-            Трекер и редактирование привычек доступны только после входа.
+            Трекер привычек и мультитаймер доступны только после входа.
           </p>
           <button
             type="button"
@@ -1831,7 +1872,73 @@ export default function App() {
           </button>
         </div>
       </main>
-      ) : screen === 'timers' ? (
+      ) : screen === 'home' ? (
+      <main
+        className={`mx-auto flex w-full max-w-5xl flex-1 items-center px-4 py-8 sm:px-6 sm:py-12 ${
+          isMobile
+            ? 'min-h-0 overflow-y-auto overscroll-y-contain [-webkit-overflow-scrolling:touch]'
+            : 'min-h-[calc(100svh-5rem)]'
+        }`}
+      >
+        <section className="w-full">
+          <div className="mb-7 text-center sm:mb-10">
+            <p className="text-xs font-extrabold uppercase tracking-[0.18em] text-slate-500">
+              Ваше пространство
+            </p>
+            <h2 className="mt-2 text-3xl font-bold tracking-[-0.045em] text-slate-900 sm:text-5xl">
+              Что откроем?
+            </h2>
+            <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-slate-600 sm:text-base">
+              Отмечайте привычки или запускайте учёт времени — каждый инструмент
+              открывается в своём рабочем пространстве.
+            </p>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2 sm:gap-6">
+            <button
+              type="button"
+              onClick={() => {
+                setScreen('tracker')
+                setMobileTrackerTab('marks')
+              }}
+              className="group min-h-52 rounded-[2rem] border border-teal-200 bg-gradient-to-br from-white to-teal-50 p-6 text-left shadow-[0_18px_50px_rgba(15,118,110,0.1)] transition hover:-translate-y-1 hover:shadow-[0_24px_60px_rgba(15,118,110,0.16)] active:translate-y-0 sm:min-h-64 sm:p-8"
+            >
+              <span className="grid h-14 w-14 place-items-center rounded-2xl bg-teal-600 text-white shadow-lg shadow-teal-600/20 sm:h-16 sm:w-16">
+                <LayoutGrid className="h-7 w-7 sm:h-8 sm:w-8" />
+              </span>
+              <span className="mt-8 block text-2xl font-bold tracking-[-0.035em] text-teal-950 sm:text-3xl">
+                Трекер привычек
+              </span>
+              <span className="mt-2 block text-sm leading-6 text-teal-800/75">
+                Отметки, цели, серии и статистика привычек.
+              </span>
+              <span className="mt-6 inline-flex items-center gap-1 text-sm font-bold text-teal-700">
+                Открыть
+                <ChevronRight className="h-4 w-4 transition group-hover:translate-x-1" />
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setScreen('timers')}
+              className="group min-h-52 rounded-[2rem] border border-blue-200 bg-gradient-to-br from-white to-blue-50 p-6 text-left shadow-[0_18px_50px_rgba(37,99,235,0.1)] transition hover:-translate-y-1 hover:shadow-[0_24px_60px_rgba(37,99,235,0.16)] active:translate-y-0 sm:min-h-64 sm:p-8"
+            >
+              <span className="grid h-14 w-14 place-items-center rounded-2xl bg-blue-600 text-white shadow-lg shadow-blue-600/20 sm:h-16 sm:w-16">
+                <Clock className="h-7 w-7 sm:h-8 sm:w-8" />
+              </span>
+              <span className="mt-8 block text-2xl font-bold tracking-[-0.035em] text-blue-950 sm:text-3xl">
+                Мультитаймер
+              </span>
+              <span className="mt-2 block text-sm leading-6 text-blue-800/75">
+                Интервалы работы, перерывы и хронология дня.
+              </span>
+              <span className="mt-6 inline-flex items-center gap-1 text-sm font-bold text-blue-700">
+                Открыть
+                <ChevronRight className="h-4 w-4 transition group-hover:translate-x-1" />
+              </span>
+            </button>
+          </div>
+        </section>
+      </main>
+      ) : screen === 'timers' && session?.user ? (
       <main
         className={`mx-auto w-full max-w-7xl px-3 py-5 sm:px-4 sm:py-8 ${
           isMobile
@@ -2298,6 +2405,58 @@ export default function App() {
             : ''
         }`}
       >
+        {isMobile && (
+          <div className="mb-4 flex items-center gap-2 px-1">
+            <div className="flex min-w-0 flex-1 items-center gap-1 rounded-2xl border border-neutral-200/80 bg-white p-1 shadow-sm">
+              <button
+                type="button"
+                onClick={() => {
+                  if (mobileMarksView === 'month') setMonthDelta(-1)
+                  else moveMobileWeek(-1)
+                }}
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-neutral-700 active:bg-neutral-100"
+                aria-label={
+                  mobileMarksView === 'month'
+                    ? 'Предыдущий месяц'
+                    : 'Предыдущая неделя'
+                }
+              >
+                <ChevronLeft className="h-5 w-5" />
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  openCalendar({ kind: 'mobileWeek' }, selectedDateKey)
+                }
+                className="min-h-10 min-w-0 flex-1 touch-manipulation truncate rounded-xl px-2 text-center text-sm font-bold text-neutral-900 active:bg-neutral-50"
+                aria-label={
+                  mobileMarksView === 'month'
+                    ? 'Выбрать дату месяца'
+                    : 'Выбрать дату недели'
+                }
+              >
+                {mobileMarksView === 'month'
+                  ? mobileMonthLabel
+                  : mobileWeekRangeLabel}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (mobileMarksView === 'month') setMonthDelta(1)
+                  else moveMobileWeek(1)
+                }}
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-neutral-700 active:bg-neutral-100"
+                aria-label={
+                  mobileMarksView === 'month'
+                    ? 'Следующий месяц'
+                    : 'Следующая неделя'
+                }
+              >
+                <ChevronRight className="h-5 w-5" />
+              </button>
+            </div>
+          </div>
+        )}
         {(!isMobile || mobileTrackerTab === 'analytics') && (
         <div
           className={`mb-4 grid gap-4 lg:mb-6 ${
@@ -2992,21 +3151,29 @@ export default function App() {
             />
           )}
           {authMenuOpen && session?.user && (
-            <div className="absolute inset-x-3 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-[110] mx-auto max-w-sm rounded-2xl border border-teal-200 bg-white p-4 shadow-2xl">
+            <div
+              className={`absolute inset-x-3 z-[110] mx-auto max-w-sm rounded-2xl border border-teal-200 bg-white p-4 shadow-2xl ${
+                screen === 'home'
+                  ? 'top-[calc(4.5rem+env(safe-area-inset-top,0px))]'
+                  : 'bottom-[calc(5.5rem+env(safe-area-inset-bottom))]'
+              }`}
+            >
               <p className="mb-3 truncate text-sm font-medium text-teal-900">
                 {profileName}
               </p>
-              <button
-                type="button"
-                onClick={() => {
-                  setAuthMenuOpen(false)
-                  setScreen('timers')
-                  setMobileTrackerTab('marks')
-                }}
-                className="mb-2 w-full rounded-xl border border-teal-200 bg-teal-50 py-3 text-sm font-semibold text-teal-900"
-              >
-                Мультитаймер
-              </button>
+              {screen !== 'home' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMenuOpen(false)
+                    setScreen('home')
+                    setMobileTrackerTab('marks')
+                  }}
+                  className="mb-2 w-full rounded-xl border border-teal-200 bg-teal-50 py-3 text-sm font-semibold text-teal-900"
+                >
+                  Главное меню
+                </button>
+              )}
               <button
                 type="button"
                 disabled={!supabase}
@@ -3047,9 +3214,10 @@ export default function App() {
               </div>
             </div>
           )}
+          {screen !== 'home' && (
           <nav
             className="pointer-events-none absolute bottom-0 left-0 right-0 z-[100]"
-            aria-label="Основная навигация"
+            aria-label="Навигация трекера привычек"
           >
             <div className="pointer-events-auto px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1">
               <div className="relative mx-auto h-[4.5rem] max-w-md">
@@ -3161,6 +3329,7 @@ export default function App() {
               </div>
             </div>
           </nav>
+          )}
         </>
       )}
 
