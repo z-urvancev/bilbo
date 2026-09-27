@@ -369,6 +369,56 @@ test('transactional sync migration enforces CAS, idempotency and tombstones', as
       [USER_A],
     )
     assert.equal(meta.rows[0].revision, 5)
+
+    const insertedGoal = await db.query(
+      `insert into public.annual_goals (
+         user_id, year, title, category, priority, status, deadline
+       ) values (
+         $1::uuid, 2026, 'Новая роль', 'career', 'high', 'in_progress', '2026-12-31'
+       ) returning id`,
+      [USER_A],
+    )
+    const goalId = insertedGoal.rows[0].id
+    await db.query(
+      `insert into public.goal_tasks (user_id, goal_id, title, month)
+       values ($1::uuid, $2::uuid, 'Подготовить план', 10)`,
+      [USER_A, goalId],
+    )
+
+    await assert.rejects(
+      () =>
+        db.query(
+          `insert into public.annual_goals (
+             user_id, year, title, category, priority, status, deadline
+           ) values (
+             $1::uuid, 2026, 'Чужая цель', 'career', 'low', 'not_started', '2026-12-31'
+           )`,
+          [USER_B],
+        ),
+      (error) => error.code === '42501',
+    )
+
+    await db.exec(
+      `select set_config('request.jwt.claim.sub', '${USER_B}', false)`,
+    )
+    const hiddenGoals = await db.query(
+      'select id from public.annual_goals where user_id = $1::uuid',
+      [USER_A],
+    )
+    assert.equal(hiddenGoals.rows.length, 0)
+
+    await db.exec(
+      `select set_config('request.jwt.claim.sub', '${USER_A}', false)`,
+    )
+    await db.query(
+      'delete from public.annual_goals where user_id = $1::uuid and id = $2::uuid',
+      [USER_A, goalId],
+    )
+    const cascadedTasks = await db.query(
+      'select id from public.goal_tasks where user_id = $1::uuid and goal_id = $2::uuid',
+      [USER_A, goalId],
+    )
+    assert.equal(cascadedTasks.rows.length, 0)
   } finally {
     await db.close()
   }

@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -8,6 +10,7 @@ import {
 import type { Session } from '@supabase/supabase-js'
 import {
   BarChart3,
+  CalendarDays,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -74,6 +77,8 @@ import {
   parseSyncEventInput,
 } from './validation'
 import { TimerScreen } from './timer/TimerScreen'
+
+const GoalCalendarScreen = lazy(() => import('./goals/GoalCalendarScreen'))
 
 const STORAGE_KEY = 'habit-calendar-v2'
 const PENDING_KEY_PREFIX = 'habit-calendar-pending-v2:'
@@ -172,7 +177,7 @@ function friendlyAuthError(e: unknown): string {
   return `Не удалось выполнить действие: ${msg}`
 }
 
-type Screen = 'home' | 'tracker' | 'habits' | 'timers'
+type Screen = 'home' | 'tracker' | 'habits' | 'timers' | 'goals'
 type DynMode = 'day' | 'week' | 'month' | 'year'
 type MobileTrackerTab = 'marks' | 'analytics'
 type MobileMarksView = 'week' | 'month'
@@ -192,6 +197,7 @@ const SCREEN_HASH: Record<Screen, string> = {
   tracker: '#/tracker',
   habits: '#/habits',
   timers: '#/timers',
+  goals: '#/goals',
 }
 
 function screenFromHash(hash = window.location.hash): Screen {
@@ -199,7 +205,8 @@ function screenFromHash(hash = window.location.hash): Screen {
   if (
     section === 'tracker' ||
     section === 'habits' ||
-    section === 'timers'
+    section === 'timers' ||
+    section === 'goals'
   )
     return section
   return 'home'
@@ -1582,7 +1589,13 @@ export default function App() {
           type="button"
           disabled={!supabaseConfigured || !supabase}
           onClick={() => setAuthModalOpen(true)}
-          className="rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-teal-800 shadow hover:bg-teal-50 disabled:opacity-60 sm:text-sm"
+          className={`rounded-md bg-white px-3 py-1.5 text-xs font-semibold shadow disabled:opacity-60 sm:text-sm ${
+            screen === 'timers'
+              ? 'text-blue-800 hover:bg-blue-50'
+              : screen === 'goals'
+                ? 'text-violet-800 hover:bg-violet-50'
+                : 'text-teal-800 hover:bg-teal-50'
+          }`}
         >
           Вход
         </button>
@@ -1599,6 +1612,8 @@ export default function App() {
           className={`rounded-md px-2.5 py-1.5 text-xs font-medium sm:text-sm ${
             screen === 'timers'
               ? 'border border-blue-300/70 bg-blue-800/70 text-blue-50 hover:bg-blue-800'
+              : screen === 'goals'
+                ? 'border border-violet-300/70 bg-violet-800/70 text-violet-50 hover:bg-violet-800'
               : 'border border-teal-300/70 bg-teal-800/70 text-teal-50 hover:bg-teal-800'
           }`}
         >
@@ -1608,7 +1623,11 @@ export default function App() {
         </button>
         {authMenuOpen && (
           <div className={`absolute right-0 z-[70] mt-1 min-w-[8rem] rounded-lg border bg-white p-1 shadow-lg ${
-            screen === 'timers' ? 'border-blue-200' : 'border-teal-200'
+            screen === 'timers'
+              ? 'border-blue-200'
+              : screen === 'goals'
+                ? 'border-violet-200'
+                : 'border-teal-200'
           }`}>
             <button
               type="button"
@@ -1623,6 +1642,8 @@ export default function App() {
               className={`w-full rounded-md px-2 py-1.5 text-left text-sm disabled:opacity-50 ${
                 screen === 'timers'
                   ? 'text-blue-800 hover:bg-blue-50'
+                  : screen === 'goals'
+                    ? 'text-violet-800 hover:bg-violet-50'
                   : 'text-teal-800 hover:bg-teal-50'
               }`}
             >
@@ -1639,11 +1660,17 @@ export default function App() {
       className={
         isMobile
           ? `fixed inset-x-0 top-0 flex h-dvh min-h-0 flex-col overflow-hidden pt-[env(safe-area-inset-top,0px)] ${
-              screen === 'timers' ? 'bg-[#f5f7f3]' : 'bg-[#f9f9f9]'
+              screen === 'timers'
+                ? 'bg-[#f5f7f3]'
+                : screen === 'goals'
+                  ? 'bg-[#f8f7fc]'
+                  : 'bg-[#f9f9f9]'
             }`
           : `min-h-svh pb-[env(safe-area-inset-bottom,0px)] pt-[env(safe-area-inset-top,0px)] ${
               screen === 'timers'
                 ? 'bg-gradient-to-b from-blue-50 to-white'
+                : screen === 'goals'
+                  ? 'bg-gradient-to-b from-violet-50 to-white'
                 : 'bg-gradient-to-b from-teal-50 to-white'
             }`
       }
@@ -1654,11 +1681,15 @@ export default function App() {
             ? `shrink-0 border-b px-3 pb-3 pt-3 text-neutral-900 ${
                 screen === 'timers'
                   ? 'border-[#dfe6e1] bg-[#f5f7f3]'
+                  : screen === 'goals'
+                    ? 'border-violet-100 bg-[#f8f7fc]'
                   : 'border-black/[0.06] bg-[#f7f7f7]'
               }`
             : `px-3 py-3 text-white shadow-md sm:px-4 sm:py-4 ${
                 screen === 'timers'
                   ? 'border-b border-blue-300 bg-blue-700'
+                  : screen === 'goals'
+                    ? 'border-b border-violet-300 bg-violet-700'
                   : 'border-b border-teal-200 bg-teal-700'
               }`
         }
@@ -1722,6 +1753,23 @@ export default function App() {
                   Привычки
                 </h1>
               </div>
+            ) : screen === 'goals' ? (
+              <div className="relative flex min-h-10 items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setScreen('home')}
+                  className="absolute left-0 grid h-9 w-9 place-items-center rounded-full bg-white text-[#33413b] shadow-sm ring-1 ring-black/5 active:bg-neutral-50"
+                  aria-label="Назад в главное меню"
+                >
+                  <ChevronLeft className="h-5 w-5" />
+                </button>
+                <span className="grid h-8 w-8 place-items-center rounded-xl bg-violet-100 text-violet-700">
+                  <CalendarDays className="h-4.5 w-4.5" strokeWidth={2.2} />
+                </span>
+                <h1 className="text-center text-lg font-bold tracking-[-0.025em] text-[#25312c]">
+                  Календарь целей
+                </h1>
+              </div>
             ) : (
               <div className="relative flex min-h-10 items-center justify-center gap-2">
                 <button
@@ -1751,7 +1799,11 @@ export default function App() {
                     Bilbo
                   </h1>
                   <nav className={`flex shrink-0 rounded-lg p-0.5 text-sm ${
-                    screen === 'timers' ? 'bg-blue-800/60' : 'bg-teal-800/60'
+                    screen === 'timers'
+                      ? 'bg-blue-800/60'
+                      : screen === 'goals'
+                        ? 'bg-violet-800/60'
+                        : 'bg-teal-800/60'
                   }`}>
                     <button
                       type="button"
@@ -1761,6 +1813,8 @@ export default function App() {
                           ? 'bg-white text-teal-800 shadow'
                           : screen === 'timers'
                             ? 'text-blue-100 hover:bg-blue-800/80'
+                            : screen === 'goals'
+                              ? 'text-violet-100 hover:bg-violet-800/80'
                             : 'text-teal-100 hover:bg-teal-800/80'
                       }`}
                     >
@@ -1774,6 +1828,8 @@ export default function App() {
                           ? 'bg-white text-teal-800 shadow'
                           : screen === 'timers'
                             ? 'text-blue-100 hover:bg-blue-800/80'
+                            : screen === 'goals'
+                              ? 'text-violet-100 hover:bg-violet-800/80'
                             : 'text-teal-100 hover:bg-teal-800/80'
                       }`}
                     >
@@ -1787,6 +1843,8 @@ export default function App() {
                           ? 'bg-white text-teal-800 shadow'
                           : screen === 'timers'
                             ? 'text-blue-100 hover:bg-blue-800/80'
+                            : screen === 'goals'
+                              ? 'text-violet-100 hover:bg-violet-800/80'
                             : 'text-teal-100 hover:bg-teal-800/80'
                       }`}
                     >
@@ -1798,10 +1856,25 @@ export default function App() {
                       className={`rounded-md px-3 py-1.5 font-medium transition ${
                         screen === 'timers'
                           ? 'bg-white text-blue-800 shadow'
-                          : 'text-teal-100 hover:bg-teal-800/80'
+                          : screen === 'goals'
+                            ? 'text-violet-100 hover:bg-violet-800/80'
+                            : 'text-teal-100 hover:bg-teal-800/80'
                       }`}
                     >
                       Мультитаймер
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setScreen('goals')}
+                      className={`rounded-md px-3 py-1.5 font-medium transition ${
+                        screen === 'goals'
+                          ? 'bg-white text-violet-800 shadow'
+                          : screen === 'timers'
+                            ? 'text-blue-100 hover:bg-blue-800/80'
+                            : 'text-teal-100 hover:bg-teal-800/80'
+                      }`}
+                    >
+                      Цели
                     </button>
                   </nav>
                   {screen === 'tracker' && (
@@ -1858,15 +1931,39 @@ export default function App() {
             : ''
         }`}
       >
-        <div className="rounded-2xl border border-teal-200 bg-white p-6 text-center shadow-sm">
-          <h2 className="text-lg font-semibold text-teal-900">Нужна авторизация</h2>
-          <p className="mt-2 text-sm text-teal-800/80">
-            Трекер привычек и мультитаймер доступны только после входа.
+        <div className={`rounded-2xl border bg-white p-6 text-center shadow-sm ${
+          screen === 'goals'
+            ? 'border-violet-200'
+            : screen === 'timers'
+              ? 'border-blue-200'
+              : 'border-teal-200'
+        }`}>
+          <h2 className={`text-lg font-semibold ${
+            screen === 'goals'
+              ? 'text-violet-900'
+              : screen === 'timers'
+                ? 'text-blue-900'
+                : 'text-teal-900'
+          }`}>Нужна авторизация</h2>
+          <p className={`mt-2 text-sm ${
+            screen === 'goals'
+              ? 'text-violet-800/80'
+              : screen === 'timers'
+                ? 'text-blue-800/80'
+                : 'text-teal-800/80'
+          }`}>
+            Трекер привычек, мультитаймер и календарь целей доступны только после входа.
           </p>
           <button
             type="button"
             onClick={() => setAuthModalOpen(true)}
-            className="mt-4 rounded-lg bg-teal-700 px-4 py-2 text-sm font-medium text-white hover:bg-teal-800"
+            className={`mt-4 rounded-lg px-4 py-2 text-sm font-medium text-white ${
+              screen === 'goals'
+                ? 'bg-violet-700 hover:bg-violet-800'
+                : screen === 'timers'
+                  ? 'bg-blue-700 hover:bg-blue-800'
+                  : 'bg-teal-700 hover:bg-teal-800'
+            }`}
           >
             Войти
           </button>
@@ -1874,7 +1971,7 @@ export default function App() {
       </main>
       ) : screen === 'home' ? (
       <main
-        className={`mx-auto flex w-full max-w-5xl flex-1 items-center px-4 py-8 sm:px-6 sm:py-12 ${
+        className={`mx-auto flex w-full max-w-6xl flex-1 items-center px-4 py-8 sm:px-6 sm:py-12 ${
           isMobile
             ? 'min-h-0 overflow-y-auto overscroll-y-contain [-webkit-overflow-scrolling:touch]'
             : 'min-h-[calc(100svh-5rem)]'
@@ -1889,11 +1986,11 @@ export default function App() {
               Что откроем?
             </h2>
             <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-slate-600 sm:text-base">
-              Отмечайте привычки или запускайте учёт времени — каждый инструмент
-              открывается в своём рабочем пространстве.
+              Отмечайте привычки, учитывайте время и раскладывайте годовые цели
+              на конкретные задачи.
             </p>
           </div>
-          <div className="grid gap-4 sm:grid-cols-2 sm:gap-6">
+          <div className="grid gap-4 sm:grid-cols-3 sm:gap-6">
             <button
               type="button"
               onClick={() => {
@@ -1935,8 +2032,50 @@ export default function App() {
                 <ChevronRight className="h-4 w-4 transition group-hover:translate-x-1" />
               </span>
             </button>
+            <button
+              type="button"
+              onClick={() => setScreen('goals')}
+              className="group min-h-52 rounded-[2rem] border border-violet-200 bg-gradient-to-br from-white to-violet-50 p-6 text-left shadow-[0_18px_50px_rgba(124,58,237,0.1)] transition hover:-translate-y-1 hover:shadow-[0_24px_60px_rgba(124,58,237,0.16)] active:translate-y-0 sm:min-h-64 sm:p-8"
+            >
+              <span className="grid h-14 w-14 place-items-center rounded-2xl bg-violet-600 text-white shadow-lg shadow-violet-600/20 sm:h-16 sm:w-16">
+                <CalendarDays className="h-7 w-7 sm:h-8 sm:w-8" />
+              </span>
+              <span className="mt-8 block text-2xl font-bold tracking-[-0.035em] text-violet-950 sm:text-3xl">
+                Календарь целей
+              </span>
+              <span className="mt-2 block text-sm leading-6 text-violet-800/75">
+                Годовые цели, задачи по месяцам и статистика выполнения.
+              </span>
+              <span className="mt-6 inline-flex items-center gap-1 text-sm font-bold text-violet-700">
+                Открыть
+                <ChevronRight className="h-4 w-4 transition group-hover:translate-x-1" />
+              </span>
+            </button>
           </div>
         </section>
+      </main>
+      ) : screen === 'goals' && session?.user ? (
+      <main
+        className={`mx-auto w-full max-w-7xl px-3 py-5 sm:px-4 sm:py-8 ${
+          isMobile
+            ? 'min-h-0 flex-1 overflow-y-auto overscroll-y-contain pb-6 [-webkit-overflow-scrolling:touch]'
+            : ''
+        }`}
+      >
+        <Suspense
+          fallback={
+            <div className="grid gap-4 sm:grid-cols-2">
+              {[0, 1, 2, 3].map((item) => (
+                <div
+                  key={item}
+                  className="h-48 animate-pulse rounded-2xl border border-violet-100 bg-white/80"
+                />
+              ))}
+            </div>
+          }
+        >
+          <GoalCalendarScreen userId={session.user.id} isMobile={isMobile} />
+        </Suspense>
       </main>
       ) : screen === 'timers' && session?.user ? (
       <main
@@ -3140,7 +3279,7 @@ export default function App() {
         </button>
       )}
 
-      {isMobile && screen !== 'timers' && (
+      {isMobile && screen !== 'timers' && screen !== 'goals' && (
         <>
           {authMenuOpen && session?.user && (
             <button

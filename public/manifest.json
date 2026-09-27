@@ -1,7 +1,7 @@
 {
-  "name": "Календарь привычек",
-  "short_name": "Привычки",
-  "description": "Трекер привычек с календарём",
+  "name": "Bilbo",
+  "short_name": "Bilbo",
+  "description": "Привычки, учёт времени и календарь годовых целей",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
