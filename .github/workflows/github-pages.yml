@@ -5,6 +5,7 @@ on:
     branches: [main]
 
 permissions:
+  actions: read
   contents: read
   pages: write
   id-token: write
@@ -44,12 +45,25 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          stale_deployment_id=$(curl --silent --show-error --fail --location \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            'https://api.github.com/repos/${{ github.repository }}/actions/jobs/109524303250/logs' \
+            | sed -n 's/.*Created deployment for dd071fed012c0579c6204403fd99065ec6b0e7f8, ID: \([^[:space:]]*\).*/\1/p' \
+            | tail -n 1)
+          if [ -z "$stale_deployment_id" ]; then
+            echo 'Could not recover the stale Pages deployment ID.'
+            exit 1
+          fi
+          echo "Cancelling stale Pages deployment $stale_deployment_id"
           status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
             --request POST \
             --header 'Accept: application/vnd.github+json' \
             --header "Authorization: Bearer $GITHUB_TOKEN" \
             --header 'X-GitHub-Api-Version: 2026-03-10' \
-            'https://api.github.com/repos/${{ github.repository }}/pages/deployments/dd071fed012c0579c6204403fd99065ec6b0e7f8/cancel')
+            "https://api.github.com/repos/${{ github.repository }}/pages/deployments/$stale_deployment_id/cancel")
           if [ "$status" != '204' ] && [ "$status" != '404' ]; then
             echo "Unexpected response while cancelling stale deployment: HTTP $status"
             exit 1
@@ -60,7 +74,7 @@ jobs:
                 --header 'Accept: application/vnd.github+json' \
                 --header "Authorization: Bearer $GITHUB_TOKEN" \
                 --header 'X-GitHub-Api-Version: 2026-03-10' \
-                'https://api.github.com/repos/${{ github.repository }}/pages/deployments/dd071fed012c0579c6204403fd99065ec6b0e7f8' \
+                "https://api.github.com/repos/${{ github.repository }}/pages/deployments/$stale_deployment_id" \
                 | jq --raw-output '.status // "unknown"')
               echo "Stale deployment status: $deployment_status"
               if [ "$deployment_status" != 'in_progress' ] && [ "$deployment_status" != 'queued' ]; then
