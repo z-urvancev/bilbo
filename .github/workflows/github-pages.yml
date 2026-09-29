@@ -54,5 +54,24 @@ jobs:
             echo "Unexpected response while cancelling stale deployment: HTTP $status"
             exit 1
           fi
+          if [ "$status" = '204' ]; then
+            for attempt in {1..30}; do
+              deployment_status=$(curl --silent --show-error \
+                --header 'Accept: application/vnd.github+json' \
+                --header "Authorization: Bearer $GITHUB_TOKEN" \
+                --header 'X-GitHub-Api-Version: 2026-03-10' \
+                'https://api.github.com/repos/${{ github.repository }}/pages/deployments/dd071fed012c0579c6204403fd99065ec6b0e7f8' \
+                | jq --raw-output '.status // "unknown"')
+              echo "Stale deployment status: $deployment_status"
+              if [ "$deployment_status" != 'in_progress' ] && [ "$deployment_status" != 'queued' ]; then
+                break
+              fi
+              sleep 2
+            done
+            if [ "$deployment_status" = 'in_progress' ] || [ "$deployment_status" = 'queued' ]; then
+              echo 'Stale deployment did not stop in time.'
+              exit 1
+            fi
+          fi
       - id: deployment
         uses: actions/deploy-pages@v4
