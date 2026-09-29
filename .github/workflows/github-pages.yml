@@ -40,5 +40,19 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Cancel stale Pages deployment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --request POST \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            'https://api.github.com/repos/${{ github.repository }}/pages/deployments/dd071fed012c0579c6204403fd99065ec6b0e7f8/cancel')
+          if [ "$status" != '204' ] && [ "$status" != '404' ]; then
+            echo "Unexpected response while cancelling stale deployment: HTTP $status"
+            exit 1
+          fi
       - id: deployment
         uses: actions/deploy-pages@v4
