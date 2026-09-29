@@ -2074,7 +2074,11 @@ export default function App() {
             </div>
           }
         >
-          <GoalCalendarScreen userId={session.user.id} isMobile={isMobile} />
+          <GoalCalendarScreen
+            key={session.user.id}
+            userId={session.user.id}
+            isMobile={isMobile}
+          />
         </Suspense>
       </main>
       ) : screen === 'timers' && session?.user ? (

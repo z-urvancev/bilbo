@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   BarChart3,
   BookOpen,
@@ -27,8 +27,13 @@ import {
   setGoalTaskCompleted,
   updateGoal,
 } from './api'
+import {
+  readGoalCalendarCache,
+  writeGoalCalendarCache,
+} from './cache'
 import type {
   AnnualGoal,
+  GoalCalendarSnapshot,
   GoalCategory,
   GoalDraft,
   GoalPriority,
@@ -176,14 +181,19 @@ export default function GoalCalendarScreen({
   isMobile,
 }: GoalCalendarScreenProps) {
   const currentYear = new Date().getFullYear()
+  const [initialCache] = useState(() =>
+    readGoalCalendarCache(userId, currentYear),
+  )
   const [year, setYear] = useState(currentYear)
   const [view, setView] = useState<GoalView>('category')
   const [selectedCategory, setSelectedCategory] = useState<
     GoalCategory | 'all'
   >('all')
-  const [goals, setGoals] = useState<AnnualGoal[]>([])
-  const [tasks, setTasks] = useState<GoalTask[]>([])
-  const [loading, setLoading] = useState(true)
+  const [snapshot, setSnapshot] = useState<GoalCalendarSnapshot>(
+    () => initialCache?.snapshot ?? { goals: [], tasks: [] },
+  )
+  const { goals, tasks } = snapshot
+  const [loading, setLoading] = useState(!initialCache)
   const [error, setError] = useState<string | null>(null)
   const [expandedGoals, setExpandedGoals] = useState<Set<string>>(new Set())
   const [goalModalOpen, setGoalModalOpen] = useState(false)
@@ -198,14 +208,29 @@ export default function GoalCalendarScreen({
     month: new Date().getMonth() + 1,
   })
   const [saving, setSaving] = useState(false)
+  const mutationVersion = useRef(0)
+
+  const updateSnapshot = (
+    updater: (current: GoalCalendarSnapshot) => GoalCalendarSnapshot,
+  ) => {
+    setSnapshot((current) => {
+      const next = updater(current)
+      writeGoalCalendarCache(userId, year, next)
+      return next
+    })
+  }
 
   useEffect(() => {
+    const cached = readGoalCalendarCache(userId, year)
+    if (cached?.fresh) return
+
     let cancelled = false
+    const versionAtStart = mutationVersion.current
     void loadGoalCalendar(userId, year)
-      .then((snapshot) => {
-        if (cancelled) return
-        setGoals(snapshot.goals)
-        setTasks(snapshot.tasks)
+      .then((freshSnapshot) => {
+        if (cancelled || mutationVersion.current !== versionAtStart) return
+        setSnapshot(freshSnapshot)
+        writeGoalCalendarCache(userId, year, freshSnapshot)
       })
       .catch((loadError: unknown) => {
         if (!cancelled) setError(errorMessage(loadError))
@@ -219,10 +244,10 @@ export default function GoalCalendarScreen({
   }, [userId, year])
 
   const changeYear = (nextYear: number) => {
-    setLoading(true)
+    const cached = readGoalCalendarCache(userId, nextYear)
+    setLoading(!cached)
     setError(null)
-    setGoals([])
-    setTasks([])
+    setSnapshot(cached?.snapshot ?? { goals: [], tasks: [] })
     setYear(nextYear)
   }
 
@@ -279,15 +304,22 @@ export default function GoalCalendarScreen({
     if (!goalDraft.title.trim() || !goalDraft.deadline) return
     setSaving(true)
     setError(null)
+    mutationVersion.current += 1
     try {
       if (editingGoal) {
         const saved = await updateGoal(userId, editingGoal.id, goalDraft)
-        setGoals((current) =>
-          current.map((goal) => (goal.id === saved.id ? saved : goal)),
-        )
+        updateSnapshot((current) => ({
+          ...current,
+          goals: current.goals.map((goal) =>
+            goal.id === saved.id ? saved : goal,
+          ),
+        }))
       } else {
         const saved = await createGoal(userId, goalDraft)
-        setGoals((current) => [...current, saved])
+        updateSnapshot((current) => ({
+          ...current,
+          goals: [...current.goals, saved],
+        }))
         setExpandedGoals((current) => new Set(current).add(saved.id))
       }
       setGoalModalOpen(false)
@@ -303,10 +335,13 @@ export default function GoalCalendarScreen({
       return
     }
     setError(null)
+    mutationVersion.current += 1
     try {
       await deleteGoal(userId, goal.id)
-      setGoals((current) => current.filter((item) => item.id !== goal.id))
-      setTasks((current) => current.filter((task) => task.goalId !== goal.id))
+      updateSnapshot((current) => ({
+        goals: current.goals.filter((item) => item.id !== goal.id),
+        tasks: current.tasks.filter((task) => task.goalId !== goal.id),
+      }))
     } catch (deleteError) {
       setError(errorMessage(deleteError))
     }
@@ -327,9 +362,13 @@ export default function GoalCalendarScreen({
     if (!taskDraft.goalId || !taskDraft.title.trim()) return
     setSaving(true)
     setError(null)
+    mutationVersion.current += 1
     try {
       const saved = await createGoalTask(userId, taskDraft)
-      setTasks((current) => [...current, saved])
+      updateSnapshot((current) => ({
+        ...current,
+        tasks: [...current.tasks, saved],
+      }))
       setExpandedGoals((current) => new Set(current).add(saved.goalId))
       setTaskModalOpen(false)
     } catch (saveError) {
@@ -341,32 +380,42 @@ export default function GoalCalendarScreen({
 
   const toggleTask = async (task: GoalTask) => {
     const completed = !task.completed
-    setTasks((current) =>
-      current.map((item) =>
+    mutationVersion.current += 1
+    updateSnapshot((current) => ({
+      ...current,
+      tasks: current.tasks.map((item) =>
         item.id === task.id ? { ...item, completed } : item,
       ),
-    )
+    }))
     setError(null)
     try {
       const saved = await setGoalTaskCompleted(userId, task.id, completed)
-      setTasks((current) =>
-        current.map((item) => (item.id === saved.id ? saved : item)),
-      )
+      updateSnapshot((current) => ({
+        ...current,
+        tasks: current.tasks.map((item) =>
+          item.id === saved.id ? saved : item,
+        ),
+      }))
     } catch (toggleError) {
-      setTasks((current) =>
-        current.map((item) =>
+      updateSnapshot((current) => ({
+        ...current,
+        tasks: current.tasks.map((item) =>
           item.id === task.id ? { ...item, completed: task.completed } : item,
         ),
-      )
+      }))
       setError(errorMessage(toggleError))
     }
   }
 
   const removeTask = async (task: GoalTask) => {
     setError(null)
+    mutationVersion.current += 1
     try {
       await deleteGoalTask(userId, task.id)
-      setTasks((current) => current.filter((item) => item.id !== task.id))
+      updateSnapshot((current) => ({
+        ...current,
+        tasks: current.tasks.filter((item) => item.id !== task.id),
+      }))
     } catch (deleteError) {
       setError(errorMessage(deleteError))
     }

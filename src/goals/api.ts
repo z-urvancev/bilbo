@@ -43,6 +43,8 @@ export class GoalsApiError extends Error {
   }
 }
 
+const calendarLoads = new Map<string, Promise<GoalCalendarSnapshot>>()
+
 function ensureClient() {
   if (!supabase) throw new GoalsApiError('Supabase не настроен')
   return supabase
@@ -83,7 +85,7 @@ function taskFromRow(row: DbGoalTask): GoalTask {
   }
 }
 
-export async function loadGoalCalendar(
+async function fetchGoalCalendar(
   userId: string,
   year: number,
 ): Promise<GoalCalendarSnapshot> {
@@ -120,6 +122,21 @@ export async function loadGoalCalendar(
     goals,
     tasks: ((taskRows ?? []) as DbGoalTask[]).map(taskFromRow),
   }
+}
+
+export function loadGoalCalendar(
+  userId: string,
+  year: number,
+): Promise<GoalCalendarSnapshot> {
+  const key = `${userId}:${year}`
+  const existing = calendarLoads.get(key)
+  if (existing) return existing
+
+  const request = fetchGoalCalendar(userId, year).finally(() => {
+    calendarLoads.delete(key)
+  })
+  calendarLoads.set(key, request)
+  return request
 }
 
 export async function createGoal(

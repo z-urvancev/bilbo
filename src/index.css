@@ -18,3 +18,9 @@ body {
   min-height: 100svh;
   overflow-x: clip;
 }
+
+@media (max-width: 767px) {
+  #root :where(input, select, textarea) {
+    font-size: 16px;
+  }
+}
