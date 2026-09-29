@@ -40,6 +40,7 @@ export type GoalTask = {
   goalId: string
   title: string
   month: number
+  monthBlock: number | null
   completed: boolean
   sortOrder: number
   createdAt: string
@@ -65,4 +66,5 @@ export type GoalTaskDraft = {
   goalId: string
   title: string
   month: number
+  monthBlock: number | null
 }

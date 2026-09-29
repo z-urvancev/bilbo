@@ -26,7 +26,9 @@ import {
   loadGoalCalendar,
   setGoalTaskCompleted,
   updateGoal,
+  updateGoalTask,
 } from './api'
+import { MONTH_BLOCKS, monthBlockForDay, monthBlockRange } from './monthBlocks'
 import {
   readGoalCalendarCache,
   writeGoalCalendarCache,
@@ -202,10 +204,16 @@ export default function GoalCalendarScreen({
     defaultGoalDraft(currentYear, 'career'),
   )
   const [taskModalOpen, setTaskModalOpen] = useState(false)
+  const [editingTask, setEditingTask] = useState<GoalTask | null>(null)
   const [taskDraft, setTaskDraft] = useState<GoalTaskDraft>({
     goalId: '',
     title: '',
     month: new Date().getMonth() + 1,
+    monthBlock: monthBlockForDay(
+      currentYear,
+      new Date().getMonth() + 1,
+      new Date().getDate(),
+    ),
   })
   const [saving, setSaving] = useState(false)
   const mutationVersion = useRef(0)
@@ -347,13 +355,29 @@ export default function GoalCalendarScreen({
     }
   }
 
-  const openNewTask = (goalId: string, month?: number) => {
+  const openNewTask = (goalId: string, month?: number, monthBlock?: number) => {
+    const selectedMonth = month ?? (year === currentYear ? new Date().getMonth() + 1 : 1)
+    setEditingTask(null)
     setTaskDraft({
       goalId,
       title: '',
-      month:
-        month ??
-        (year === currentYear ? new Date().getMonth() + 1 : 1),
+      month: selectedMonth,
+      monthBlock: monthBlock ?? (
+        year === currentYear && selectedMonth === new Date().getMonth() + 1
+          ? monthBlockForDay(year, selectedMonth, new Date().getDate())
+          : 1
+      ),
+    })
+    setTaskModalOpen(true)
+  }
+
+  const openEditTask = (task: GoalTask) => {
+    setEditingTask(task)
+    setTaskDraft({
+      goalId: task.goalId,
+      title: task.title,
+      month: task.month,
+      monthBlock: task.monthBlock,
     })
     setTaskModalOpen(true)
   }
@@ -364,10 +388,14 @@ export default function GoalCalendarScreen({
     setError(null)
     mutationVersion.current += 1
     try {
-      const saved = await createGoalTask(userId, taskDraft)
+      const saved = editingTask
+        ? await updateGoalTask(userId, editingTask.id, taskDraft)
+        : await createGoalTask(userId, taskDraft)
       updateSnapshot((current) => ({
         ...current,
-        tasks: [...current.tasks, saved],
+        tasks: editingTask
+          ? current.tasks.map((task) => task.id === saved.id ? saved : task)
+          : [...current.tasks, saved],
       }))
       setExpandedGoals((current) => new Set(current).add(saved.goalId))
       setTaskModalOpen(false)
@@ -459,12 +487,75 @@ export default function GoalCalendarScreen({
         </div>
         <button
           type="button"
+          onClick={() => openEditTask(task)}
+          className="shrink-0 rounded-md p-1 text-slate-400 transition hover:bg-violet-50 hover:text-violet-700"
+          aria-label="Редактировать задачу"
+        >
+          <Pencil className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
           onClick={() => void removeTask(task)}
           className="shrink-0 rounded-md p-1 text-slate-300 opacity-100 transition hover:bg-rose-50 hover:text-rose-600 sm:opacity-0 sm:group-hover:opacity-100"
           aria-label="Удалить задачу"
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
+      </div>
+    )
+  }
+
+  const renderMonthBlocks = (
+    month: number,
+    monthTasks: GoalTask[],
+    compact = false,
+    showEmpty = true,
+    goalId = '',
+  ) => {
+    const unassigned = monthTasks.filter((task) => task.monthBlock === null)
+    return (
+      <div className="space-y-2">
+        {MONTH_BLOCKS.map((block) => {
+          const blockTasks = monthTasks.filter((task) => task.monthBlock === block)
+          if (!showEmpty && blockTasks.length === 0) return null
+          const { start, end } = monthBlockRange(year, month, block)
+          const done = blockTasks.filter((task) => task.completed).length
+          return (
+            <div key={block} className="rounded-xl border border-slate-100 bg-slate-50/70 p-2">
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <span className="font-bold text-slate-600">
+                  {block}-й блок <span className="font-medium text-slate-400">· {start}–{end}</span>
+                </span>
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-slate-400">{done}/{blockTasks.length}</span>
+                  {showEmpty && goals.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => openNewTask(goalId, month, block)}
+                      className="rounded-md p-0.5 text-violet-600 hover:bg-violet-100"
+                      aria-label={`Добавить задачу в ${block}-й блок`}
+                    >
+                      <Plus className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
+              {blockTasks.length > 0 && (
+                <div className="mt-2 space-y-1.5">
+                  {blockTasks.map((task) => renderTask(task, compact))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+        {unassigned.length > 0 && (
+          <div className="rounded-xl border border-dashed border-slate-200 p-2">
+            <p className="mb-2 text-xs font-bold text-slate-400">Без блока</p>
+            <div className="space-y-1.5">
+              {unassigned.map((task) => renderTask(task, compact))}
+            </div>
+          </div>
+        )}
       </div>
     )
   }
@@ -593,9 +684,7 @@ export default function GoalCalendarScreen({
                       <p className="mb-1.5 text-[11px] font-extrabold uppercase tracking-[0.12em] text-slate-400">
                         {month}
                       </p>
-                      <div className="space-y-1.5">
-                        {monthTasks.map((task) => renderTask(task))}
-                      </div>
+                      {renderMonthBlocks(index + 1, monthTasks, false, false, goal.id)}
                     </div>
                   )
                 })}
@@ -830,15 +919,7 @@ export default function GoalCalendarScreen({
                     {done}/{monthTasks.length}
                   </span>
                 </div>
-                {monthTasks.length > 0 ? (
-                  <div className="space-y-2">
-                    {monthTasks.map((task) => renderTask(task, true))}
-                  </div>
-                ) : (
-                  <p className="py-8 text-center text-xs text-slate-400">
-                    Задач пока нет
-                  </p>
-                )}
+                {renderMonthBlocks(monthIndex + 1, monthTasks, true)}
               </section>
             )
           })}
@@ -1136,14 +1217,14 @@ export default function GoalCalendarScreen({
             }
           }}
         >
-          <div className="w-full max-w-md rounded-t-[1.75rem] bg-white p-5 shadow-2xl sm:rounded-[1.75rem] sm:p-6">
+          <div className="max-h-[calc(100dvh-1rem)] w-full max-w-md overflow-y-auto rounded-t-[1.75rem] bg-white p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom,0px))] shadow-2xl sm:rounded-[1.75rem] sm:p-6">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-xs font-bold uppercase tracking-[0.15em] text-violet-500">
-                  Задача по цели
+                  {editingTask ? 'Редактировать задачу' : 'Задача по цели'}
                 </p>
                 <h3 className="mt-1 truncate text-lg font-bold text-slate-900">
-                  {goalById.get(taskDraft.goalId)?.title ?? 'Новая задача'}
+                  {goalById.get(taskDraft.goalId)?.title ?? 'Выберите цель'}
                 </h3>
               </div>
               <button
@@ -1157,6 +1238,23 @@ export default function GoalCalendarScreen({
               </button>
             </div>
             <div className="mt-5 space-y-4">
+              {!editingTask && (
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-semibold text-slate-700">Цель</span>
+                  <select
+                    value={taskDraft.goalId}
+                    onChange={(event) =>
+                      setTaskDraft((draft) => ({ ...draft, goalId: event.target.value }))
+                    }
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm outline-none focus:border-violet-400"
+                  >
+                    <option value="">Выберите цель</option>
+                    {goals.map((goal) => (
+                      <option key={goal.id} value={goal.id}>{goal.title}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <label className="block">
                 <span className="mb-1.5 block text-sm font-semibold text-slate-700">
                   Что нужно сделать
@@ -1196,14 +1294,39 @@ export default function GoalCalendarScreen({
                   ))}
                 </select>
               </label>
+              <label className="block">
+                <span className="mb-1.5 block text-sm font-semibold text-slate-700">
+                  Блок месяца
+                </span>
+                <select
+                  value={taskDraft.monthBlock ?? ''}
+                  onChange={(event) =>
+                    setTaskDraft((draft) => ({
+                      ...draft,
+                      monthBlock: event.target.value === '' ? null : Number(event.target.value),
+                    }))
+                  }
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm outline-none focus:border-violet-400"
+                >
+                  {taskDraft.monthBlock === null && <option value="">Без блока</option>}
+                  {MONTH_BLOCKS.map((block) => {
+                    const { start, end } = monthBlockRange(year, taskDraft.month, block)
+                    return (
+                      <option key={block} value={block}>
+                        {block}-й блок · {start}–{end}
+                      </option>
+                    )
+                  })}
+                </select>
+              </label>
             </div>
             <button
               type="button"
               onClick={() => void saveTask()}
-              disabled={saving || !taskDraft.title.trim()}
+              disabled={saving || !taskDraft.goalId || !taskDraft.title.trim()}
               className="mt-5 w-full rounded-xl bg-violet-600 py-3 text-sm font-bold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {saving ? 'Сохраняем…' : 'Добавить задачу'}
+              {saving ? 'Сохраняем…' : editingTask ? 'Сохранить задачу' : 'Добавить задачу'}
             </button>
           </div>
         </div>

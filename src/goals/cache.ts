@@ -12,8 +12,8 @@ import type {
 export const GOAL_CACHE_FRESH_MS = 5 * 60 * 1000
 export const GOAL_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 
-const CACHE_PREFIX = 'bilbo:goal-calendar:v1'
-const CACHE_VERSION = 1
+const CACHE_PREFIX = 'bilbo:goal-calendar:v2'
+const CACHE_VERSION = 2
 
 type CacheStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 
@@ -98,6 +98,11 @@ function isGoalTask(
     Number.isInteger(value.month) &&
     value.month >= 1 &&
     value.month <= 12 &&
+    (value.monthBlock === null ||
+      (typeof value.monthBlock === 'number' &&
+        Number.isInteger(value.monthBlock) &&
+        value.monthBlock >= 1 &&
+        value.monthBlock <= 4)) &&
     typeof value.completed === 'boolean' &&
     typeof value.sortOrder === 'number' &&
     typeof value.createdAt === 'string' &&

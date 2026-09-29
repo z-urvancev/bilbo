@@ -49,6 +49,7 @@ function snapshot(userId, year) {
         goalId: 'goal-1',
         title: 'Первая задача',
         month: 1,
+        monthBlock: null,
         completed: false,
         sortOrder: 0,
         createdAt: '2026-01-01T00:00:00Z',
@@ -105,12 +106,27 @@ test('goals cache rejects malformed persisted data', () => {
   const storage = new MemoryStorage()
   const userId = 'cache-user-invalid'
   const year = 2026
-  const key = `bilbo:goal-calendar:v1:${userId}:${year}`
-  storage.setItem(key, JSON.stringify({ version: 1, userId, year }))
+  const key = `bilbo:goal-calendar:v2:${userId}:${year}`
+  storage.setItem(key, JSON.stringify({ version: 2, userId, year }))
 
   clearGoalCalendarCache(userId, year, { storage })
   storage.setItem(key, '{broken json')
 
   assert.equal(readGoalCalendarCache(userId, year, { storage }), null)
   assert.equal(storage.getItem(key), null)
+})
+
+test('goals cache rejects an invalid month block', () => {
+  const storage = new MemoryStorage()
+  const userId = 'cache-user-block'
+  const year = 2026
+  const invalid = snapshot(userId, year)
+  invalid.tasks[0].monthBlock = 5
+
+  storage.setItem(
+    `bilbo:goal-calendar:v2:${userId}:${year}`,
+    JSON.stringify({ version: 2, userId, year, savedAt: Date.now(), snapshot: invalid }),
+  )
+
+  assert.equal(readGoalCalendarCache(userId, year, { storage }), null)
 })

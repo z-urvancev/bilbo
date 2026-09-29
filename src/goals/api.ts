@@ -27,6 +27,7 @@ type DbGoalTask = {
   goal_id: string
   title: string
   month: number
+  month_block: number | null
   completed: boolean
   sort_order: number
   created_at: string
@@ -78,6 +79,7 @@ function taskFromRow(row: DbGoalTask): GoalTask {
     goalId: row.goal_id,
     title: row.title,
     month: row.month,
+    monthBlock: row.month_block,
     completed: row.completed,
     sortOrder: row.sort_order,
     createdAt: row.created_at,
@@ -106,7 +108,7 @@ async function fetchGoalCalendar(
   const { data: taskRows, error: tasksError } = await client
     .from('goal_tasks')
     .select(
-      'id,user_id,goal_id,title,month,completed,sort_order,created_at,updated_at',
+      'id,user_id,goal_id,title,month,month_block,completed,sort_order,created_at,updated_at',
     )
     .eq('user_id', userId)
     .in(
@@ -216,9 +218,34 @@ export async function createGoalTask(
       goal_id: draft.goalId,
       title: draft.title.trim(),
       month: draft.month,
+      month_block: draft.monthBlock,
     })
     .select(
-      'id,user_id,goal_id,title,month,completed,sort_order,created_at,updated_at',
+      'id,user_id,goal_id,title,month,month_block,completed,sort_order,created_at,updated_at',
+    )
+    .single()
+  throwApiError(error)
+  return taskFromRow(data as DbGoalTask)
+}
+
+export async function updateGoalTask(
+  userId: string,
+  taskId: string,
+  draft: GoalTaskDraft,
+): Promise<GoalTask> {
+  const client = ensureClient()
+  const { data, error } = await client
+    .from('goal_tasks')
+    .update({
+      title: draft.title.trim(),
+      month: draft.month,
+      month_block: draft.monthBlock,
+    })
+    .eq('user_id', userId)
+    .eq('id', taskId)
+    .eq('goal_id', draft.goalId)
+    .select(
+      'id,user_id,goal_id,title,month,month_block,completed,sort_order,created_at,updated_at',
     )
     .single()
   throwApiError(error)
@@ -237,7 +264,7 @@ export async function setGoalTaskCompleted(
     .eq('user_id', userId)
     .eq('id', taskId)
     .select(
-      'id,user_id,goal_id,title,month,completed,sort_order,created_at,updated_at',
+      'id,user_id,goal_id,title,month,month_block,completed,sort_order,created_at,updated_at',
     )
     .single()
   throwApiError(error)
