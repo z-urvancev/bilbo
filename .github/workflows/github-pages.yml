@@ -86,6 +86,9 @@ jobs:
               echo 'Stale deployment did not stop in time.'
               exit 1
             fi
+            # Pages releases its deployment lock shortly after reporting the
+            # terminal cancellation status.
+            sleep 20
           fi
       - id: deployment
         uses: actions/deploy-pages@v4
