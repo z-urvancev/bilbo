@@ -182,12 +182,15 @@ export default function GoalCalendarScreen({
   userId,
   isMobile,
 }: GoalCalendarScreenProps) {
-  const currentYear = new Date().getFullYear()
+  const today = new Date()
+  const currentYear = today.getFullYear()
+  const currentMonth = today.getMonth() + 1
   const [initialCache] = useState(() =>
     readGoalCalendarCache(userId, currentYear),
   )
   const [year, setYear] = useState(currentYear)
   const [view, setView] = useState<GoalView>('category')
+  const [showPreviousMonths, setShowPreviousMonths] = useState(false)
   const [selectedCategory, setSelectedCategory] = useState<
     GoalCategory | 'all'
   >('all')
@@ -253,6 +256,7 @@ export default function GoalCalendarScreen({
 
   const changeYear = (nextYear: number) => {
     const cached = readGoalCalendarCache(userId, nextYear)
+    setShowPreviousMonths(nextYear < currentYear)
     setLoading(!cached)
     setError(null)
     setSnapshot(cached?.snapshot ?? { goals: [], tasks: [] })
@@ -285,6 +289,11 @@ export default function GoalCalendarScreen({
   const completedTasks = tasks.filter((task) => task.completed).length
   const overallProgress = progressPercent(tasks)
   const completedGoals = goals.filter((goal) => goal.status === 'completed').length
+  const previousMonthsCount = year < currentYear
+    ? 12
+    : year === currentYear
+      ? currentMonth - 1
+      : 0
 
   const openNewGoal = (category?: GoalCategory) => {
     const nextCategory =
@@ -902,27 +911,64 @@ export default function GoalCalendarScreen({
           </div>
         </div>
       ) : view === 'months' ? (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {MONTHS.map((month, monthIndex) => {
-            const monthTasks = tasks.filter(
-              (task) => task.month === monthIndex + 1,
-            )
-            const done = monthTasks.filter((task) => task.completed).length
-            return (
-              <section
-                key={month}
-                className="min-h-44 rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-[0_8px_25px_rgba(15,23,42,0.04)]"
-              >
-                <div className="mb-3 flex items-center justify-between border-b border-slate-100 pb-2.5">
-                  <h3 className="font-bold text-slate-900">{month}</h3>
-                  <span className="text-xs font-bold text-slate-400">
-                    {done}/{monthTasks.length}
-                  </span>
-                </div>
-                {renderMonthBlocks(monthIndex + 1, monthTasks, true)}
-              </section>
-            )
-          })}
+        <div>
+          {previousMonthsCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowPreviousMonths((shown) => !shown)}
+              aria-expanded={showPreviousMonths}
+              aria-controls="goal-months-grid"
+              className="mb-3 inline-flex items-center gap-2 rounded-xl border border-violet-200 bg-white px-3 py-2 text-sm font-semibold text-violet-700 shadow-sm transition hover:bg-violet-50"
+            >
+              <ChevronDown className={`h-4 w-4 transition-transform ${showPreviousMonths ? 'rotate-180' : ''}`} />
+              {showPreviousMonths
+                ? 'Скрыть предыдущие месяцы'
+                : `Показать предыдущие месяцы (${previousMonthsCount})`}
+            </button>
+          )}
+          <div id="goal-months-grid" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {MONTHS.map((month, monthIndex) => {
+              const monthNumber = monthIndex + 1
+              const isCurrent = year === currentYear && monthNumber === currentMonth
+              const isPast = year < currentYear || (year === currentYear && monthNumber < currentMonth)
+              if (isPast && !showPreviousMonths) return null
+
+              const monthTasks = tasks.filter((task) => task.month === monthNumber)
+              const done = monthTasks.filter((task) => task.completed).length
+              return (
+                <section
+                  key={month}
+                  className={`min-h-44 rounded-2xl border p-3.5 transition-opacity ${
+                    isCurrent
+                      ? 'border-violet-400 bg-violet-50/60 shadow-[0_10px_30px_rgba(124,58,237,0.12)] ring-2 ring-violet-100'
+                      : isPast
+                        ? 'border-slate-200 bg-slate-50/80 opacity-75 shadow-sm hover:opacity-100'
+                        : 'border-slate-200/90 bg-white shadow-[0_8px_25px_rgba(15,23,42,0.04)]'
+                  }`}
+                >
+                  <div className="mb-3 flex items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <h3 className={`font-bold ${isCurrent ? 'text-violet-950' : 'text-slate-900'}`}>{month}</h3>
+                      {isCurrent && (
+                        <span className="rounded-full bg-violet-600 px-2 py-0.5 text-[10px] font-bold text-white">
+                          Сейчас
+                        </span>
+                      )}
+                    </div>
+                    <span className="shrink-0 text-xs font-bold text-slate-400">
+                      {done}/{monthTasks.length}
+                    </span>
+                  </div>
+                  {renderMonthBlocks(monthNumber, monthTasks, true)}
+                </section>
+              )
+            })}
+          </div>
+          {previousMonthsCount === 12 && !showPreviousMonths && (
+            <p className="rounded-2xl border border-dashed border-violet-200 bg-white px-5 py-8 text-center text-sm text-slate-500">
+              Месяцы {year} скрыты. Нажмите «Показать предыдущие месяцы», чтобы их открыть.
+            </p>
+          )}
         </div>
       ) : (
         <div className="space-y-4">
